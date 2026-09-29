@@ -2,6 +2,7 @@
 
 ## Status
 Proposed — 2026-09-29
+Accepted — 2026-09-29, with the answers in the Amendment below (#2)
 
 ## Context
 RF-09 requires authentication events recorded "in structured, queryable form".
@@ -38,3 +39,25 @@ reimplement.
    count, or refuse to start (RNF-05)?
 
 Accept, with the answers, before phase 1 emits its first login event.
+
+## Amendment — accepted (#2)
+
+The two open questions, answered.
+
+1. **The reuse-detected event is durable where the revocation is.** Family
+   revocation is already a Postgres `UPDATE` (ADR-0002). The same statement
+   records `revoked_at` and `revoked_reason` (`reuse_detected`, `revoked_by_client`,
+   `admin`, `consent_revoked`), in the same transaction. So the fact that RS-11
+   fired survives any loss downstream, without an audit table: the family row
+   *is* the record. The event still goes to `crier` for correlation and alerting.
+   Every other event class is best-effort.
+2. **When `crier` is unreachable: bounded buffer, then drop and count.** Events
+   queue in a fixed-size in-memory buffer; when it is full, new events are
+   dropped and a counter per drop reason is incremented and logged locally.
+   `/readyz` does not depend on `crier`: an audit sink outage does not stop
+   logins. Refusing to start was rejected because it couples usher's
+   availability to a log pipeline at boot while leaving the same gap after boot;
+   failing closed was rejected for the same coupling, permanently.
+
+T-19's residual changes accordingly: losing `crier` loses events, but not the
+record that a refresh family was revoked for reuse.
