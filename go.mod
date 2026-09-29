@@ -5,3 +5,5 @@ module github.com/JonasBorgesLM/usher
 // GO-2026-6090 and GO-2026-5972 in 1.26.6. 1.25.13 would not do: Go orders
 // versions across lines, so 1.26.5 satisfies it and has neither fix. ADR-0008.
 go 1.26.6
+
+require github.com/JonasBorgesLM/bastion v0.2.1
