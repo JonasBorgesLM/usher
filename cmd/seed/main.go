@@ -5,12 +5,9 @@
 // It is idempotent: running it against an already-seeded database reports
 // each existing user and creates nothing new.
 //
-// Passwords are NOT yet functional. Argon2id hashing (RS-13) is issue #14;
-// until it lands, every seeded user's password_hash is a clearly-marked
-// placeholder that cannot be produced by hashing any real password, and no
-// login attempt can succeed against it. This command exists now because the
-// user store (#13) needs fixture data to be tested against, independent of
-// whether hashing exists yet.
+// Every seeded user shares devPassword, a fixed, clearly-labeled value —
+// never anything resembling a real credential, and never used outside a
+// local development database.
 package main
 
 import (
@@ -22,21 +19,26 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JonasBorgesLM/usher/internal/config"
+	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/store/postgres"
 )
 
-// placeholderHash is deliberately not a real Argon2id hash of anything — its
-// shape is PHC-like only so it satisfies the schema's length check, not so
-// it looks usable. #14 replaces every reference to this constant.
-const placeholderHash = "$argon2id$v=19$m=65536,t=3,p=4$c2VlZC1wbGFjZWhvbGRlcg$bm90LWEtcmVhbC1oYXNoLXlldA" // #nosec G101 -- explicitly not a credential; see doc comment above
+// devPassword is every seeded user's password. Fixed and printed at seed
+// time (not secret — there is nothing behind it worth protecting yet, since
+// the login endpoint this would authenticate against does not exist until
+// #16) so a developer running this command can actually use it.
+const devPassword = "usher-local-dev-only" // #nosec G101 -- a fixed local-dev value, not a real credential
 
-// seedUsers is provisional: REQUIREMENTS RF-05 says permission is the
+// seedRoles is provisional: REQUIREMENTS RF-05 says permission is the
 // intersection of client scope and role, but the role vocabulary itself is
 // M5's design. "admin" and "user" are the two placeholders that let the
 // store and RBAC work be tested before that vocabulary exists.
-var seedUsers = []postgres.SeedUser{
-	{Identifier: "admin@example.com", PasswordHash: placeholderHash, Role: "admin"},
-	{Identifier: "user@example.com", PasswordHash: placeholderHash, Role: "user"},
+var seedRoles = []struct {
+	identifier string
+	role       string
+}{
+	{"admin@example.com", "admin"},
+	{"user@example.com", "user"},
 }
 
 func main() {
@@ -64,22 +66,27 @@ func run() error {
 	}
 
 	store := postgres.NewUserStore(pool)
-	slog.Warn("passwords are placeholders and cannot be logged in with", "issue", 14)
+	slog.Warn("every seeded user shares one fixed password; local development only", "password", devPassword)
 
-	for _, u := range seedUsers {
-		existing, ok, err := store.ByIdentifier(ctx, u.Identifier)
+	for _, seed := range seedRoles {
+		existing, ok, err := store.ByIdentifier(ctx, seed.identifier)
 		if err != nil {
-			return fmt.Errorf("check for existing user %s: %w", u.Identifier, err)
+			return fmt.Errorf("check for existing user %s: %w", seed.identifier, err)
 		}
 		if ok {
-			slog.Info("already exists, skipping", "identifier", u.Identifier, "id", existing.ID, "role", existing.Role)
+			slog.Info("already exists, skipping", "identifier", seed.identifier, "id", existing.ID, "role", existing.Role)
 			continue
 		}
-		id, err := store.CreateUser(ctx, u)
+
+		hash, err := identity.HashPassword(devPassword, identity.DefaultParams)
 		if err != nil {
-			return fmt.Errorf("create user %s: %w", u.Identifier, err)
+			return fmt.Errorf("hash password for %s: %w", seed.identifier, err)
 		}
-		slog.Info("created", "identifier", u.Identifier, "id", id, "role", u.Role)
+		id, err := store.CreateUser(ctx, postgres.SeedUser{Identifier: seed.identifier, PasswordHash: hash, Role: seed.role})
+		if err != nil {
+			return fmt.Errorf("create user %s: %w", seed.identifier, err)
+		}
+		slog.Info("created", "identifier", seed.identifier, "id", id, "role", seed.role)
 	}
 	return nil
 }
