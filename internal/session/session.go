@@ -1,0 +1,79 @@
+// Package session holds the two kinds of server-side state /authorize
+// depends on: the opaque, single-use login/consent Challenge (RS-05), and
+// the AS's own BrowserSession (RF-10, RS-31) — distinct from any OAuth
+// client's session and from the OAuth flow's Code. Both are Redis-backed,
+// implemented in internal/store/redis.
+package session
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// Challenge is one pending /authorize flow, addressed by an opaque id that
+// carries no request parameters (RS-05).
+type Challenge struct {
+	ID            string
+	ClientID      string
+	RedirectURI   string
+	Scope         []string
+	State         string
+	CodeChallenge string
+	Nonce         string // "" if the request carried none (RS-30)
+	Subject       string // "" until login succeeds
+	ExpiresAt     time.Time
+}
+
+// ErrChallengeNotFound reports that no live challenge matches — expired,
+// never issued, or already consumed (RS-05: single-use).
+var ErrChallengeNotFound = errors.New("session: challenge not found")
+
+// ChallengeStore is Redis-backed (ephemeral, REQUIREMENTS §7.1).
+type ChallengeStore interface {
+	Save(ctx context.Context, c Challenge) error
+
+	// Get reads without consuming — /login and /consent each render the
+	// same challenge across a GET/POST pair before the flow completes.
+	Get(ctx context.Context, id string) (Challenge, error)
+
+	// SetSubject records the authenticated subject on a still-pending
+	// challenge, between login succeeding and /consent.
+	SetSubject(ctx context.Context, id, subject string) error
+
+	// Consume atomically deletes and returns c — single-use (RS-05), the
+	// same shape as oauth.CodeStore.Consume. Called once, when /authorize is
+	// ready to mint a Code.
+	Consume(ctx context.Context, id string) (Challenge, error)
+}
+
+// BrowserSession is the AS's own login session, independent of any OAuth
+// client's session.
+type BrowserSession struct {
+	ID        string // opaque, ≥256 bits; stored as its SHA-256 (RS-31)
+	Subject   string
+	AuthTime  time.Time // RF-11's auth_time, under max_age
+	IdleUntil time.Time
+	ExpiresAt time.Time // absolute lifetime (RF-12)
+}
+
+// ErrSessionNotFound reports that no session matches — absent, or past
+// IdleUntil or ExpiresAt.
+var ErrSessionNotFound = errors.New("session: browser session not found")
+
+// SessionStore is Redis-backed.
+//
+// renaming only this one to "Store" would break that parallel, not improve it.
+//
+//nolint:revive // matches ChallengeStore's naming in this same package;
+type SessionStore interface {
+	Save(ctx context.Context, s BrowserSession) error
+
+	// Get looks up by the SHA-256 of rawID and extends IdleUntil (RF-12).
+	Get(ctx context.Context, rawID string) (BrowserSession, error)
+
+	// Delete ends the session server-side. Called before the response that
+	// clears the cookie (RS-31) — the order is the requirement, not a
+	// suggestion.
+	Delete(ctx context.Context, rawID string) error
+}
