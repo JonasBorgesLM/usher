@@ -1,0 +1,76 @@
+# Local development stack (RNF-06). `docker compose up` brings up the
+# infrastructure usher needs — Postgres and Redis — under the constraints
+# RNF-07 and ADR-0010 put on them, both verifiable from the host once it is
+# running:
+#
+#   docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning CONFIG GET maxmemory-policy
+#   docker compose exec postgres pg_isready -U "${POSTGRES_USER:-usher}"
+#
+# usher and the demo resource server are not compose services yet: cmd/usher
+# and cmd/resource-server (built in #7) print "not implemented" and exit 1, so
+# adding them here now would just show two crash-looping containers next to
+# two healthy ones. They join this file once M2 (usher) and M6
+# (resource-server) give them something to do — at the static addresses
+# ADR-0010's amendment already reserves in the network below.
+name: usher
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-usher}
+      POSTGRES_USER: ${POSTGRES_USER:-usher}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env — see .env.example}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      usher:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-usher}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    # --maxmemory-policy noeviction is explicit rather than assumed (RNF-07):
+    # Redis defaults to noeviction only when no maxmemory limit is set at
+    # all, so an operator who later adds --maxmemory without also repeating
+    # this flag silently re-enables eviction, discarding rate-limit buckets
+    # under memory pressure — and preferentially the bucket of the client
+    # already being throttled. usher's own startup check
+    # (redisstore.EvictionCheck) verifies this from the running server, not
+    # from this file; this file is what makes that check pass.
+    command:
+      - redis-server
+      - --maxmemory-policy
+      - noeviction
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env — see .env.example}
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      usher:
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  # Fixed rather than Compose's dynamic default, so the gateway's realip
+  # trust configuration (ADR-0010) can name a concrete range instead of
+  # guessing at whatever Compose happened to allocate on a given machine.
+  # The amendment on ADR-0010 records which address is reserved for what.
+  usher:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+volumes:
+  postgres-data:
+  redis-data:
