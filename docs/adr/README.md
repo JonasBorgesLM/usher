@@ -30,9 +30,10 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0012`](0012-strict-refresh-rotation-no-grace-window.md) | Strict refresh rotation — no grace window | Accepted | — |
 | [`0013`](0013-demo-resource-server-in-repository.md) | Demo resource server in this repository; `task-api` deferred | Accepted | — |
 | [`0014`](0014-access-token-revocation-is-gateway-local.md) | Access-token revocation is gateway-local; the TTL bounds it elsewhere | Accepted | — |
-| [`0015`](0015-signing-keyset-custody-and-rotation.md) | Signing keys as a mounted keyset with explicit windows | **Proposed** | — |
+| [`0015`](0015-signing-keyset-custody-and-rotation.md) | Signing keys as a mounted keyset with explicit windows | Accepted | [Amendment (#3)](0015-signing-keyset-custody-and-rotation.md#amendment--accepted-3) |
 | [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | — |
-| [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | **Proposed** | — |
+| [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2) |
+| [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
 
 ## Reopening criteria on the record
 
@@ -55,10 +56,4 @@ decided is the one that gets implemented by accident.
 
 | Question | Blocks | Where |
 | --- | --- | --- |
-| Emergency key revocation shorter than the JWKS cache TTL | Phase 2 | ADR-0015 |
-| Keyset re-read versus restart-to-rotate | Phase 3 | ADR-0015 |
-| RS256 or ES256 as the default signing algorithm | Phase 2 | ADR-0015 |
-| Best-effort audit delivery for the reuse-detected event | Phase 1 | ADR-0017 |
-| Behaviour when `crier` is unreachable | Phase 1 | ADR-0017 |
-| `golang-migrate` or embedded SQL migrations, as `task-api` does | Phase 0 schema | REQUIREMENTS §9 |
 | Whether `Clear-Site-Data: "cookies"` on logout may clear the whole registrable domain | Phase 7 | REQUIREMENTS RS-27 |

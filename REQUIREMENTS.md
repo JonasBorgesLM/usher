@@ -1,6 +1,6 @@
 # Requirements — usher
 
-**Version:** 0.4
+**Version:** 0.5
 **Status:** baseline for implementation — no code written yet
 **Verified against:** `moat` core `v0.2.0` (`go 1.24`, no external requires),
 `moat/redisstore v0.2.2` (`go 1.26.6`), `bastion v0.2.1` (`go 1.24`). Every
@@ -16,7 +16,8 @@ is referenced from commit messages, ADRs and tests.
 
 Cross-project citations are written qualified — `bastion/ADR-0009`,
 `crier/IR7` — so they are not silently checked against this project's numbering.
-What changed from v0.3, and why, is in [§15](#15-changes-from-v03).
+What changed from v0.3, and why, is in [§15](#15-changes-from-v03); from v0.4, in
+[§16](#16-changes-from-v04).
 
 ---
 
@@ -294,7 +295,13 @@ random `kid` turns the resource server into a DoS amplifier against the AS.
 
 Every instance must agree on which key signs at a given moment without
 coordinating at runtime; how is
-[ADR-0015](docs/adr/0015-signing-keyset-custody-and-rotation.md) (proposed).
+[ADR-0015](docs/adr/0015-signing-keyset-custody-and-rotation.md). Signing
+defaults to RS256, which OpenID Connect Core requires an OP to support.
+
+**Emergency revocation of a key** is a `kid` denylist in configuration: the key
+leaves the JWKS and the gateway refuses it on the next request after restart.
+A consumer validating directly keeps accepting it until its JWKS cache expires —
+the same gateway-local shape as RF-06, and T-18's residual.
 
 **RS-10 — Opaque refresh tokens stored hashed.** ≥256 bits from `crypto/rand`,
 persisted as SHA-256, looked up by hash. A database dump must not yield usable
@@ -303,7 +310,9 @@ tokens.
 **RS-11 — Reuse detection with family revocation.** Each session has a
 `family_id`. A consumed refresh token reappearing invalidates the whole family
 and raises a high-severity audit event. The "already consumed" check is
-**atomic** (compare-and-set), never read-then-write.
+**atomic** (compare-and-set), never read-then-write. The revocation records
+`revoked_reason = reuse_detected` on the family row in the same transaction, so
+the fact survives any loss of the audit stream (ADR-0017).
 
 **RS-34 — Refresh tokens are bound to their client and their grant.** The
 refresh grant requires the same `client_id` the family was issued to, and client
@@ -564,7 +573,7 @@ docs/
 | Rate limit buckets | Redis | Shared across instances (see RNF-07) |
 | Access token denylist | Redis | TTL equals token TTL; gateway-only (RF-06) |
 | Private keys | Mounted keyset, never the database or the repository | [ADR-0015](docs/adr/0015-signing-keyset-custody-and-rotation.md) |
-| Audit events | Structured log stream, shipped to `crier` | RI-03, [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md) (proposed) |
+| Audit events | Structured log stream, shipped to `crier` | RI-03, [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md); the reuse-detected fact is also on the family row |
 
 What Redis loses is, row by row, either safe to lose or a stated residual: a lost
 code or challenge fails the flow; a lost session forces a login; a lost
@@ -682,7 +691,7 @@ not in handlers or middleware.
 | Password hashing | `golang.org/x/crypto/argon2` | `bcrypt` |
 | Postgres | `pgx/v5` | — |
 | Redis | `go-redis/v9` | Already a `redisstore` dependency |
-| Migrations | `golang-migrate` | Embedded SQL, as `task-api` does — open question in the ADR index |
+| Migrations | Embedded SQL, forward-only, advisory lock ([ADR-0018](docs/adr/0018-embedded-forward-only-migrations.md)) | `golang-migrate` — large tree, and down migrations this project would forbid |
 | Integration tests | `testcontainers-go` | Consistent with `moat` |
 
 `ory/fosite` is read as an architectural reference for what a correct OAuth2
@@ -786,8 +795,9 @@ code existed, and closes `bastion` issue #32:
 structured records with a versioned schema and exported to `crier`'s ingestion
 endpoint, authenticated with the gateway's own credential (`crier/IR3`). They
 carry no secret (RS-23). Durability and queryability are `crier`'s backend's;
-what that costs is [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md)
-(proposed).
+what that costs is [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md).
+When `crier` is unreachable, events queue in a bounded buffer and are then
+dropped and counted; `/readyz` does not depend on `crier`.
 
 **RI-04 — The identity header contract.** The gateway injects `X-Auth-Subject`,
 `X-Auth-Client` and `X-Auth-Scope`, after stripping the namespace (RS-17). A
@@ -842,3 +852,16 @@ Recorded so the review can be audited rather than re-derived.
 | Added RNF-08 to RNF-11 | CI-before-code, dependency allow-list, health/readiness, shutdown |
 | ADR ids are four digits; §12 points at the index | `ADR-01` and `0011-…` were both in use |
 | Project named `usher` throughout | The draft README had drifted to "gateway" |
+
+---
+
+## 16. Changes from v0.4
+
+The M0 decisions, taken before the code they govern.
+
+| Change | Why |
+|---|---|
+| RS-09 names RS256 as the default and the `kid` denylist as the emergency path | ADR-0015 accepted (#3) |
+| RS-11 records the revocation reason on the family row | ADR-0017 accepted (#2): the reuse-detected fact must not depend on best-effort delivery |
+| RI-03 states the behaviour when `crier` is unreachable | ADR-0017 accepted (#2) |
+| §9 migrations: embedded SQL instead of `golang-migrate` | ADR-0018 (#4); one dependency fewer (RNF-02) |
