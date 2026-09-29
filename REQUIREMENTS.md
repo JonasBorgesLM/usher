@@ -374,6 +374,14 @@ deletes the server-side session **before** responding; the cookie deletion and
 `Content-Security-Policy: frame-ancestors 'none'`. A consent page in an invisible
 frame is a clickjacking attack that grants scopes on the user's behalf.
 
+**RS-36 — HTML is rendered only through `html/template`, under a nonce CSP.**
+Login, consent and error pages render through `html/template`, and every script
+runs under `moat`'s per-request CSP nonce (§7.3). Values that did not originate
+in the binary — a client's registered name, requested scopes, an
+`error_description` — are never wrapped in `template.HTML` or its siblings.
+The consent page is where a malicious client's own registration data meets the
+user's session, which makes it the page an injection would target.
+
 ### 5.4 Gateway
 
 **RS-17 — Strip inbound identity headers.** The gateway removes from every
@@ -605,7 +613,7 @@ two valid options, not a rejection.
 | RS-27 | `secureheaders.ClearSiteData` | Real server-side invalidation (RS-31) |
 | RS-32 | `secureheaders` CSP | Confirm `frame-ancestors 'none'` on every HTML response |
 | RNF-07 | `Store.EvictionCheck()` | Assert `Verified()` at startup and fail |
-| CSP | Per-request nonce + `Nonce(r)` | Use it in login/consent templates; handle `WithNonceErrorHandler` |
+| RS-36 | Per-request CSP nonce + `Nonce(r)` | Use it in login/consent templates; handle `WithNonceErrorHandler` |
 
 **`realip` topology, both sides.** The gateway is the trusted proxy for the
 resource server and may itself sit behind a load balancer. Two separate
@@ -823,6 +831,7 @@ Recorded so the review can be audited rather than re-derived.
 | Added RS-29 (`iss`), RS-30 (`nonce`), RF-11 | RFC 9700 mix-up mitigation and the OIDC parameters were absent |
 | Added RF-10, RS-31 and the sessions row in §7.1 | `/authorize` relied on a session nobody had specified — no cookie attributes, lifetime or store |
 | Added RS-32 | Consent could be framed |
+| Added RS-36 | Found by the threat model (T-21): template injection had a row in §7.3 but no id, so nothing could cite or test it |
 | Added RS-33 | Argon2id on an unauthenticated endpoint is a memory-exhaustion lever |
 | Added RS-34, RS-35 | Refresh was not bound to its client or grant; the account axis could be bypassed by case |
 | RF-06 states the denylist is gateway-only; ADR-0014 | Revocation was described as complete when it is partial at the RS |
