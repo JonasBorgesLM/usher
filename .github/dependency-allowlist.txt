@@ -16,3 +16,4 @@ github.com/go-chi/chi/v5                       *        REQUIREMENTS §9 router;
 github.com/jackc/pgx/v5                        *        REQUIREMENTS §9 Postgres driver (ADR-0002)
 github.com/redis/go-redis/v9                   *        REQUIREMENTS §9 already required by moat/redisstore
 github.com/testcontainers/testcontainers-go    *        REQUIREMENTS §9 integration tests against real Postgres and Redis
+github.com/testcontainers/testcontainers-go/modules/postgres *  REQUIREMENTS §9 same integration tests, the Postgres container helper
