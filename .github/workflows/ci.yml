@@ -1,0 +1,244 @@
+# CI for usher. Shape from foundation/kit/ci/go-ci.yml; the project guards are
+# usher's own (RNF-08). Every check lives in a script under .github/scripts so it
+# runs locally exactly as it runs here.
+#
+# Pre-implementation: until the first .go file exists, the Go jobs print a
+# notice and pass. The `packages` step fails if .go files exist that `go list`
+# cannot see, so the skip cannot outlive the empty tree.
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  schedule:
+    # Weekly, so a newly published vulnerability is found by govulncheck rather
+    # than by a user.
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The floor (ADR-0008). Build and test here.
+  GO_VERSION: "1.26.6"
+  # govulncheck runs on the newest supported toolchain: scanning against a
+  # standard library that no longer gets fixes reports findings nothing here
+  # can resolve.
+  GO_SUPPORTED_VERSION: "stable"
+  # golangci-lint typechecks against the stdlib of the toolchain it was built
+  # with and refuses a newer one. This pin and LINT_VERSION move together.
+  LINT_GO_VERSION: "1.26.6"
+  LINT_VERSION: "v2.12.2"
+  GOSEC_VERSION: "v2.28.0"
+  GOVULNCHECK_VERSION: "v1.8.0"
+  # Fail rather than silently rewrite go.mod or fetch an unlogged checksum.
+  GOFLAGS: -mod=readonly
+  GOSUMDB: sum.golang.org
+
+jobs:
+  # -------------------------------------------------------------- build ----
+  build:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+
+      - name: Are there Go packages yet?
+        id: packages
+        run: |
+          list="$(go list ./...)" || exit 1
+          if [ -n "$list" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ -n "$(find . -name '*.go' -not -path './.git/*' -print -quit)" ]; then
+            echo "::error::.go files exist but go list found no packages"; exit 1
+          fi
+          echo "::notice::No Go packages yet. Build, vet and test have nothing to check; this notice disappears with the first .go file."
+          echo "present=false" >> "$GITHUB_OUTPUT"
+
+      - name: go build
+        if: steps.packages.outputs.present == 'true'
+        run: go build ./...
+
+      - name: go vet
+        if: steps.packages.outputs.present == 'true'
+        run: go vet ./...
+
+      - name: go test -race
+        if: steps.packages.outputs.present == 'true'
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Report coverage
+        if: steps.packages.outputs.present == 'true'
+        run: |
+          if [ -s coverage.out ]; then go tool cover -func=coverage.out | tail -1
+          else echo "no coverage profile yet (no tests)"; fi
+
+  # --------------------------------------------------------------- lint ----
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.LINT_GO_VERSION }}
+          cache-dependency-path: go.mod
+
+      - name: Are there Go packages yet?
+        id: packages
+        run: |
+          list="$(go list ./...)" || exit 1
+          echo "present=$([ -n "$list" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      # The config is validated even with no code: a schema error found on the
+      # first real PR is a red build nobody caused.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.LINT_VERSION }}
+          install-only: true
+      - name: golangci-lint config verify
+        run: golangci-lint config verify
+      - name: golangci-lint run
+        if: steps.packages.outputs.present == 'true'
+        run: golangci-lint run ./...
+
+      - name: gosec
+        if: steps.packages.outputs.present == 'true'
+        # -tests scans test files too: an attack case that no longer compiles is
+        # an attack case that is no longer being run.
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@${{ env.GOSEC_VERSION }}
+          gosec -tests -exclude-generated ./...
+
+  # ------------------------------------------------------- govulncheck ----
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_SUPPORTED_VERSION }}
+          cache-dependency-path: go.mod
+      - name: govulncheck
+        run: |
+          list="$(go list ./...)" || exit 1
+          if [ -z "$list" ]; then
+            echo "::notice::No Go packages yet; govulncheck has nothing to scan."
+            exit 0
+          fi
+          go install golang.org/x/vuln/cmd/govulncheck@${{ env.GOVULNCHECK_VERSION }}
+          govulncheck ./...
+
+  # ----------------------------------------------------- project guards ----
+  #
+  # The checks that assert usher's own claims. Each was seen failing against a
+  # deliberate violation before it was trusted.
+  guards:
+    name: project guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+      - name: Documentation — ids, threats, ADR index, links
+        run: ./.github/scripts/check-docs.sh
+      - name: Package boundaries (ADR-0001)
+        run: ./.github/scripts/check-boundaries.sh
+      - name: Dependency allow-list (RNF-09)
+        run: ./.github/scripts/check-dependencies.sh
+
+  # ---------------------------------------------------- ADR immutability ----
+  #
+  # An accepted ADR is amended, never rewritten, and an amendment only ADDS
+  # lines. A rewrite removes them.
+  adr-immutability:
+    name: ADRs are amended, never rewritten
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: An existing ADR may gain lines, never lose them
+        continue-on-error: ${{ contains(github.event.pull_request.labels.*.name, 'adr-typo') }}
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          files=$(git diff --name-only --diff-filter=M "$base"...HEAD -- 'docs/adr/[0-9]*.md') || exit 1
+          rewritten=""
+          for f in $files; do
+            deleted=$(git diff --numstat "$base"...HEAD -- "$f" | awk '{print $2}')
+            [ "${deleted:-0}" -gt 0 ] && rewritten="$rewritten $f($deleted lines removed)"
+          done
+          if [ -n "$rewritten" ]; then
+            echo "::error::an ADR was rewritten rather than amended:$rewritten"
+            echo "A change of mind is a new ADR that supersedes this one, or an"
+            echo "'## Amendment' section appended to it. A genuine typo: label"
+            echo "the PR 'adr-typo'."
+            exit 1
+          fi
+          echo "no existing ADR lost a line"
+
+  # ------------------------------------------------------------ commits ----
+  commits:
+    name: conventional commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Every commit and the PR title follow the convention
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: ./.github/scripts/check-commits.sh '${{ github.event.pull_request.base.sha }}' "$TITLE"
+
+  # -------------------------------------------------- dependency review ----
+  dependency-review:
+    name: dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5.0.0
+        with:
+          # A new dependency is a design decision (RNF-02), so any known
+          # vulnerability fails rather than being triaged later.
+          fail-on-severity: low
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-2.1, LGPL-3.0
+          comment-summary-in-pr: on-failure
+
+  # -------------------------------------------------------------- gate ----
+  #
+  # The one required check. Branch protection can only name jobs; protecting a
+  # single gate means adding a job never silently widens the gap between "CI
+  # passed" and "everything ran". `skipped` counts: PR-only jobs skip on push.
+  ci-ok:
+    name: CI OK
+    if: always()
+    needs: [build, lint, govulncheck, guards, adr-immutability, commits, dependency-review]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed
+        run: |
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "Upstream results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::an upstream job reported '$r'"; exit 1 ;;
+            esac
+          done

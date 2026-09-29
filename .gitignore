@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Graphify knowledge graph — generated per machine, rebuilt with `graphify update .`
+graphify-out/
+
+# macOS Finder metadata
+.DS_Store

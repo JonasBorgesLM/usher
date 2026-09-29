@@ -1,0 +1,38 @@
+# One module, plus the workflow files.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies]
+    commit-message:
+      prefix: "build(deps)"
+    ignore:
+      # ADR-0011 and ADR-0016: first-party, pre-1.0, pinned exactly and upgraded
+      # by hand from a clean directory. moat took a breaking rename in a MINOR
+      # release and published a satellite tag that did not compile; an automated
+      # bump of either is the event those ADRs exist to prevent. check-
+      # dependencies.sh fails on the same condition if this rule is removed.
+      - dependency-name: github.com/JonasBorgesLM/moat
+      - dependency-name: github.com/JonasBorgesLM/moat/redisstore
+      - dependency-name: github.com/JonasBorgesLM/bastion
+    groups:
+      test-tooling:
+        patterns:
+          - "github.com/testcontainers/*"
+          - "github.com/docker/*"
+
+  # Actions are pinned by version; an action update is a supply-chain change and
+  # gets the same review as a code dependency.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "ci(deps)"
