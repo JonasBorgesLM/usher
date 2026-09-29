@@ -1,12 +1,12 @@
 # Requirements — usher
 
-**Version:** 0.5
+**Version:** 0.6
 **Status:** baseline for implementation — no code written yet
 **Verified against:** `moat` core `v0.2.0` (`go 1.24`, no external requires),
 `moat/redisstore v0.2.2` (`go 1.26.6`), `bastion v0.2.1` (`go 1.24`). Every
 `moat` API named below was checked to exist at those tags, not at `main`.
 **Companion documents:** [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) ·
-[`docs/adr/`](docs/adr/README.md)
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/adr/`](docs/adr/README.md)
 
 This document is binding. Every `RF-`, `RS-`, `RNF-` and `RI-` identifier below
 is referenced from commit messages, ADRs and tests.
@@ -17,7 +17,7 @@ is referenced from commit messages, ADRs and tests.
 Cross-project citations are written qualified — `bastion/ADR-0009`,
 `crier/IR7` — so they are not silently checked against this project's numbering.
 What changed from v0.3, and why, is in [§15](#15-changes-from-v03); from v0.4, in
-[§16](#16-changes-from-v04).
+[§16](#16-changes-from-v04); from v0.5, in [§17](#17-changes-from-v05).
 
 ---
 
@@ -539,12 +539,13 @@ cmd/
   usher/            the AS + gateway binary
   resource-server/  demo RS, validates with pkg/tokenvalidator (RI-05)
 internal/
+  config/           env + versioned files → Config; fails closed (RNF-03, RNF-05)
   oauth/            protocol only (authorize, token, revoke, introspect)
     grant/          one Strategy per grant_type
   oidc/             discovery, id_token, userinfo
   keys/             keyset loading, rotation schedule, JWKS
   session/          login and consent challenges, user session
-  identity/         users, credentials, roles
+  identity/         users, clients, roles
   rbac/             permission evaluation
   proxy/            reverse proxy and identity propagation
   audit/            event schema and emission (RI-03)
@@ -558,6 +559,11 @@ docs/
   ARCHITECTURE.md   packages and signatures (phase 0 deliverable)
   adr/              architectural decisions
 ```
+
+**Signatures, no bodies, are in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).**
+`internal/config` was added to this tree while writing that document — it had
+a commit scope and an issue (#12) already, but no package, which is exactly
+the kind of gap writing signatures before code is supposed to surface.
 
 ### 7.1 Storage split
 
@@ -865,3 +871,12 @@ The M0 decisions, taken before the code they govern.
 | RS-11 records the revocation reason on the family row | ADR-0017 accepted (#2): the reuse-detected fact must not depend on best-effort delivery |
 | RI-03 states the behaviour when `crier` is unreachable | ADR-0017 accepted (#2) |
 | §9 migrations: embedded SQL instead of `golang-migrate` | ADR-0018 (#4); one dependency fewer (RNF-02) |
+
+---
+
+## 17. Changes from v0.5
+
+| Change | Why |
+|---|---|
+| Added `internal/config` to §7's package tree | Writing `docs/ARCHITECTURE.md` (#5) found a package the commit scopes and issue #12 already assumed but the tree never listed |
+| §7 links `docs/ARCHITECTURE.md` | The signatures the foundation method's step 3 asks for now exist |
