@@ -220,10 +220,12 @@ holds connections up to the upstream timeout.
 **Mitigation:** keys never in the database or the repository (§7.1), custody and
 rotation per ADR-0015, RS-09 (publication windows), RS-06 (only listed keys
 verify).
-**Residual:** the largest here. There is no emergency path shorter than removing
-the key from the JWKS and waiting out `consumer_JWKS_cache_TTL`; tokens already
-issued under it stay valid at any consumer that cached it. ADR-0015 is proposed,
-not accepted, and this residual is one of its open questions.
+**Residual:** the largest here. The emergency path is a `kid` denylist
+(ADR-0015): the gateway refuses the key after a restart, but a consumer
+validating directly keeps accepting tokens it signed until
+`consumer_JWKS_cache_TTL` expires. Between leak and restart, the gateway accepts
+them too. No shorter path exists without consumers polling something other than
+the JWKS.
 
 ### T-19 — Loss or forgery of the audit trail
 **Actor:** an attacker covering tracks; anyone able to reach `crier`.
@@ -231,9 +233,10 @@ not accepted, and this residual is one of its open questions.
 was never seen.
 **Mitigation:** RF-09 (versioned schema), RI-03 (authenticated shipping;
 `crier` overwrites client-asserted identity, `crier/ADR-0008`), RS-23.
-**Residual:** delivery depends on `crier`; its drops are counted, not prevented.
-Whether a best-effort sink is acceptable for security events is exactly what
-ADR-0017 leaves open.
+**Residual:** delivery depends on `crier`, through a bounded buffer whose drops
+are counted, not prevented (ADR-0017). The one fact that must not be lost —
+that a family was revoked for reuse (RS-11) — is also recorded on the family row
+in Postgres. Every other event can be lost with `crier`.
 
 ### T-20 — Scope escalation and consent abuse
 **Actor:** malicious client.

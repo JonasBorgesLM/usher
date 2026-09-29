@@ -109,10 +109,10 @@ disappears with the first `.go` file. That is the only intended skip.
 
 ## Important Decisions
 
-All in [`docs/adr/`](docs/adr/README.md). Two are **Proposed** and block
-phases: ADR-0015 (signing keyset — blocks phase 2) and ADR-0017 (audit to
-`crier` — blocks phase 1). Do not implement either area as though it were
-decided; resolve the open questions in the ADR first.
+All in [`docs/adr/`](docs/adr/README.md). Read an ADR's `## Amendment`
+sections as part of it: ADR-0015 and ADR-0017 were Proposed and were accepted by
+amendment, which is where their answers live. A question still listed as open
+in the index is not decided — resolve it in an ADR before implementing it.
 
 ## Non-negotiable Invariants
 

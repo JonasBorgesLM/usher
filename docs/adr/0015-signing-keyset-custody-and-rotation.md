@@ -2,6 +2,7 @@
 
 ## Status
 Proposed — 2026-09-29
+Accepted — 2026-09-29, with the answers in the Amendment below (#3)
 
 ## Context
 RS-09 requires rotation without downtime: a key is published before it signs,
@@ -48,3 +49,26 @@ KMS), and the wrong dependency for a local, `docker compose up` study project.
 3. RS256 or ES256 as the default algorithm (RS-06 allows both).
 
 Accept, with the answers, before phase 2 starts.
+
+## Amendment — accepted (#3)
+
+The three open questions, answered. Nothing above is superseded; this narrows it.
+
+1. **Emergency path: a `kid` denylist in configuration.** A key listed there is
+   dropped from the JWKS and refused by the gateway on the next request after a
+   restart, whatever its windows say. A consumer validating directly — the demo
+   resource server included — keeps accepting tokens it signed until its JWKS
+   cache expires. That is the ADR-0014 shape applied to keys, and it is T-18's
+   residual, now stated precisely rather than left open. A shorter path would
+   need consumers to poll something other than the JWKS, which is a protocol
+   usher's consumers do not speak.
+2. **Restart to load, no periodic re-read.** The keyset is read once, at
+   startup. Rotation is routine because windows are timestamps: the next key is
+   installed days ahead with a future `sign_from`, and any restart in between
+   picks it up; the switch then happens at `sign_from` with no restart at all.
+   Periodic re-read was rejected because it adds runtime failure modes — a
+   half-written directory, a keyset that stops validating while the process
+   keeps serving — to save a rolling restart that emergencies need anyway.
+3. **RS256 by default; ES256 allowed.** OpenID Connect Core requires an OP to
+   support RS256 for ID tokens, and discovery must list it. ES256 keys may be
+   in the keyset (RS-06 allows both); the default for new keys is RS256.

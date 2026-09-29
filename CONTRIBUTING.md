@@ -57,6 +57,33 @@ the state is stuck both ways: a closed PR cannot be retargeted, and one whose ba
 is gone cannot be reopened. Recovery is to restore the branch at the commit the PR
 was based on, then reopen, retarget, delete.
 
+**This repository deletes head branches automatically on merge.** That closes
+the window between "merge the lower PR" and "retarget the dependent PR" in the
+sequence above — GitHub can delete the base branch before the retarget command
+runs. The reliable order is to **retarget the dependent PR to `develop` before
+merging the lower one at all**: its diff temporarily shows both PRs' commits,
+which shrinks back to its own once the lower PR merges, and there is no window
+where a deletion can close it. `usher/PR-57` was retargeted this way while
+`usher/PR-56` was still open, for exactly this reason.
+
+### `Closes #N` only closes on a merge to the default branch
+
+GitHub's closing keywords fire on a merge to the repository's **default**
+branch — `main` here, per the branch model above. A pull request merged into
+`develop` does not close the issue it cites, even with the exact keyword and
+number, and the issue stays open (and, if another issue names it as a
+blocker, stays showing as blocked) until `main` catches up.
+
+Close the issue by hand when its PR merges to `develop`:
+
+```bash
+gh issue close 33 -c "Closed by #42, merged to develop; not yet on main."
+```
+
+Re-opening on a regression is `gh issue reopen`. Do not wait for the release to
+`main` to close issues — that turns every milestone's issues into a batch
+closed on tag day, disconnected from when the work actually landed.
+
 ### Merging
 
 - **Merge commit** for a branch whose commits are each one subject — the history
