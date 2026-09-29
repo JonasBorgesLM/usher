@@ -1,4 +1,4 @@
-# gateway
+# usher
 
 An OAuth 2.1 / OpenID Connect authorization server and reverse proxy, written
 from scratch in Go to study the parts of authentication that are easy to get
@@ -22,7 +22,8 @@ exist, when a client sends the identity header the gateway was about to inject.
 This project implements the flow properly and **writes down the reasoning**, so
 it can be inspected rather than trusted. The full requirements and threat model
 are in [`REQUIREMENTS.md`](REQUIREMENTS.md); the decision record is in
-[`doc/adr/`](doc/adr).
+[`docs/adr/`](docs/adr/README.md), and what each
+mitigation does *not* cover is in [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md).
 
 ## What it does
 
@@ -66,7 +67,7 @@ boundaries — the protocol package does not import the proxy package, or the
 reverse. Splitting them later is a deployment change, not a rewrite.
 
 ```
-cmd/gateway/
+cmd/usher/            cmd/resource-server/   (demo RS, re-validates)
 internal/
   oauth/     protocol only        keys/      rotation, JWKS
   oidc/      discovery, userinfo  session/   login/consent challenges
@@ -98,7 +99,7 @@ mode where a stolen token starts working.
 - **Postgres 16+.**
 
 ```bash
-docker compose up      # gateway, Postgres, Redis, resource server
+docker compose up      # usher, Postgres, Redis, demo resource server
 ```
 
 ## Testing
@@ -127,12 +128,25 @@ one. Its `ratelimit.Store` interface took a breaking rename in a minor release,
 and one published satellite tag did not compile. It is therefore **pinned to an
 exact version and never auto-upgraded**; upgrades are manual and verified from a
 clean directory. The reasoning is in
-[`doc/adr/0011-moat-dependency.md`](doc/adr/0011-moat-dependency.md).
+[ADR-0011](docs/adr/0011-moat-trust-decision.md).
 
 Where the boundary sits is documented rather than assumed. `moat` does not do
 exact `redirect_uri` matching (it declines OAuth-shaped rules by design), does
 not rotate session identifiers (only CSRF tokens), and does not set server
 timeouts. Those are this project's job, and each has its own requirement.
+
+## Ecosystem
+
+usher is where several first-party projects meet, and the boundary with each
+is a numbered requirement rather than an assumption:
+
+| Project | Role here | Requirement |
+|---|---|---|
+| [`moat`](https://github.com/JonasBorgesLM/moat) | Edge security middleware | RI-01, ADR-0011 |
+| [`bastion`](https://github.com/JonasBorgesLM/bastion) | Circuit breaker on the proxy path | RI-02, ADR-0016 |
+| [`crier`](https://github.com/JonasBorgesLM/crier) | Receives the audit events | RI-03, ADR-0017 |
+| [`warden`](https://github.com/JonasBorgesLM/warden), [`sapper`](https://github.com/JonasBorgesLM/sapper) | Verify the running stack: probes and load | RI-06 |
+| [`task-api`](https://github.com/JonasBorgesLM/task-api) | A later second resource server — not in the MVP | RI-05, ADR-0013 |
 
 ## Known limitations
 
@@ -144,6 +158,10 @@ Stated up front, because they matter more than the feature list.
   anything valuable.
 - **No sender-constrained tokens.** A stolen access token is usable by whoever
   holds it until it expires. DPoP and mTLS binding are planned extensions.
+- **Access-token revocation is enforced at the gateway only.** A resource server
+  reached directly keeps accepting a revoked token until it expires, which is why
+  access tokens live five minutes by default
+  ([ADR-0014](docs/adr/0014-access-token-revocation-is-gateway-local.md)).
 - **No dynamic client registration.** Clients are configured statically.
 - **`Clear-Site-Data` on logout is defence in depth**, not the mechanism — it is
   ignored on non-secure origins and browser support is uneven. Server-side
@@ -154,7 +172,7 @@ Stated up front, because they matter more than the feature list.
 
 ## Roadmap
 
-- [ ] 0 — Foundations: ADRs, schema, CI
+- [ ] 0 — Foundations: requirements, threat model, ADRs, CI guards, schema, skeleton
 - [ ] 1 — Identity: hashing, constant-work login, session
 - [ ] 2 — Authorization code + PKCE
 - [ ] 3 — Key rotation and JWKS
@@ -163,6 +181,10 @@ Stated up front, because they matter more than the feature list.
 - [ ] 6 — Reverse proxy
 - [ ] 7 — Full OIDC
 - [ ] 8 — `client_credentials`, introspection, hardening
+- [ ] 9 — Verification: threat probes, `warden` and `sapper` runs, `v0.1.0`
+
+Work is tracked on the project board; each issue cites the requirement and
+the ADR it closes. How to contribute is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
