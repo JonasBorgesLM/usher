@@ -3,8 +3,8 @@
 ## Status
 
 usher is pre-implementation: requirements, threat model and ADRs are written;
-production code is not. Work is tracked on the GitHub project board for this
-repository, grouped into milestones `M0` to `M9`, one per phase of
+production code is not. Work is tracked on the
+[project board](https://github.com/users/JonasBorgesLM/projects/7), grouped into milestones `M0` to `M9`, one per phase of
 [`REQUIREMENTS.md`](REQUIREMENTS.md) §11. Every issue cites the requirement and
 the ADR it closes, and has a checkable "done when".
 
