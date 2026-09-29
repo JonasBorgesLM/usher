@@ -146,12 +146,16 @@ type RefreshToken struct {
 type FamilyStore interface {
 	CreateFamily(ctx context.Context, f Family, first RefreshToken) error
 
-	// Rotate is RS-11's atomic compare-and-set: if hash is unconsumed, mark
-	// it consumed and insert next in the SAME statement, returning
-	// (true, nil). If hash was already consumed, insert nothing and return
-	// (false, nil) — the caller treats false as reuse (ADR-0012: no grace
-	// window) and revokes in the same request. This must be one conditional
-	// UPDATE; a SELECT followed by an UPDATE is the race RS-11 forbids.
+	// Rotate is RS-11's atomic compare-and-set. The race is decided entirely
+	// by one conditional UPDATE (§2.2's schema note has the exact query) —
+	// a SELECT followed by an UPDATE is what RS-11 forbids, because it lets
+	// two concurrent callers each see "unconsumed" before either writes.
+	// Only the caller whose UPDATE actually affects a row inserts next, in
+	// the same database transaction as that UPDATE — same transaction,
+	// not necessarily the same statement, since the transaction is what
+	// makes "consumed but next was never inserted" impossible to observe,
+	// while the UPDATE alone is what makes the race impossible to win twice.
+	// consumed reports which of those two things the caller was.
 	Rotate(ctx context.Context, hash [32]byte, next RefreshToken) (consumed bool, err error)
 
 	// Revoke sets RevokedAt/RevokedReason idempotently.
@@ -166,6 +170,26 @@ type FamilyStore interface {
 	Lookup(ctx context.Context, hash [32]byte) (Family, RefreshToken, error)
 }
 ```
+
+**Schema (issue #6).** `internal/store/postgres/migrations/0001_initial_schema.sql`
+holds `users`, `refresh_families`, `refresh_tokens` and `consent` — never a
+`clients` table, since RF-01 makes those versioned configuration, not a
+database row. `refresh_tokens.hash` is `BYTEA CHECK (octet_length(hash) = 32)`:
+structurally the width of a SHA-256 digest and nothing else, so there is no
+column shape a raw token could be written to by mistake (RS-10). `Rotate`'s
+one conditional UPDATE is, verbatim:
+
+```sql
+UPDATE refresh_tokens SET consumed_at = now()
+WHERE hash = $1 AND consumed_at IS NULL;
+```
+
+`RowsAffected() == 1` is `consumed == true`; `== 0` is reuse. Verified against
+a real Postgres 16 under concurrency
+(`TestRefreshTokenConsumption_AtomicUnderConcurrency`): fifty goroutines racing
+this UPDATE on one row, exactly one reports success. The negative control —
+the SELECT-then-UPDATE shape this requirement forbids, run once to confirm the
+test catches it — let 44 to 50 of 50 "win."
 
 ### 2.3 Consent (RF-13)
 
