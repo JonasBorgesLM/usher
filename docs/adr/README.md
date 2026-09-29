@@ -25,7 +25,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0007`](0007-forward-original-token-rs-revalidates.md) | Forward the original token; the resource server re-validates | Accepted | — |
 | [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | — |
 | [`0009`](0009-record-tokenvalidator-signature-changes.md) | Record `tokenvalidator` signature changes every phase | Accepted | — |
-| [`0010`](0010-realip-topology-both-sides.md) | `realip` topology declared on both sides, never `0.0.0.0/0` | Accepted | — |
+| [`0010`](0010-realip-topology-both-sides.md) | `realip` topology declared on both sides, never `0.0.0.0/0` | Accepted | [Amendment (#8)](0010-realip-topology-both-sides.md#amendment--the-compose-networks-concrete-range-8) |
 | [`0011`](0011-moat-trust-decision.md) | `moat` trusted as first-party, pinned exactly, never auto-upgraded | Accepted | — |
 | [`0012`](0012-strict-refresh-rotation-no-grace-window.md) | Strict refresh rotation — no grace window | Accepted | — |
 | [`0013`](0013-demo-resource-server-in-repository.md) | Demo resource server in this repository; `task-api` deferred | Accepted | — |

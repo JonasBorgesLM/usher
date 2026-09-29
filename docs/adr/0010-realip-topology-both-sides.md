@@ -2,6 +2,7 @@
 
 ## Status
 Accepted — 2026-09-29
+Amended — 2026-09-29, with the concrete range below (#8)
 
 ## Context
 The per-IP rate-limit axis (RS-22) keys on the client address. Behind a proxy,
@@ -32,3 +33,20 @@ silently, with rate limiting keyed on the wrong address.
 - A misdeclared range still fails silently in one direction (too narrow: every
   client shares the proxy's bucket). `sapper`'s ramp-up scenario is the check
   that would expose it (RI-06).
+
+## Amendment — the compose network's concrete range (#8)
+
+`docker-compose.yml`'s `usher` network is fixed at `172.28.0.0/24`, rather
+than Compose's dynamic default, specifically so this ADR could name a
+concrete range instead of one that changes across machines and runs.
+
+Once M2 adds `usher` as a compose service, it is pinned to a static address
+within that range — `172.28.0.10` — and the demo resource server's trusted
+set (added in M6) is that single address, not the whole `/24`. Trusting one
+address is a tighter boundary than trusting the subnet: anything else that
+later joins the network does not inherit the gateway's trust by virtue of
+being on it.
+
+Outside compose — a real deployment — both ranges are the operator's own
+infrastructure's, per the ADR's main decision above; this amendment is the
+local-development instance of it, not a general rule.
