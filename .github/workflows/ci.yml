@@ -158,6 +158,41 @@ jobs:
       - name: Dependency allow-list (RNF-09)
         run: ./.github/scripts/check-dependencies.sh
 
+  # -------------------------------------------------------- integration ----
+  #
+  # go test -tags=integration against real Postgres and Redis via
+  # testcontainers-go (REQUIREMENTS §10) -- never a fake in their place. The
+  # container runtime is guaranteed on this runner (ubuntu-latest ships
+  # Docker), so its absence is this job's own failure, not a reason to skip:
+  # a suite that skips itself exits 0, which is a negative assertion
+  # satisfied by a command that never ran. `docker info` fails fast and
+  # legibly if that guarantee is ever wrong; without it, the same absence
+  # would only surface as go test's -timeout expiring inside a container
+  # start, minutes later, with a stack trace instead of a one-line cause --
+  # confirmed by making Docker briefly unreachable while writing this job.
+  integration:
+    name: integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+
+      - name: Docker is available (testcontainers needs it)
+        run: docker info
+
+      - name: Are there Go packages yet?
+        id: packages
+        run: |
+          list="$(go list ./...)" || exit 1
+          echo "present=$([ -n "$list" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: go test -tags=integration -race
+        if: steps.packages.outputs.present == 'true'
+        run: go test -tags=integration -race -timeout=5m ./...
+
   # ---------------------------------------------------- ADR immutability ----
   #
   # An accepted ADR is amended, never rewritten, and an amendment only ADDS
@@ -229,7 +264,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [build, lint, govulncheck, guards, adr-immutability, commits, dependency-review]
+    needs: [build, lint, govulncheck, guards, integration, adr-immutability, commits, dependency-review]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed
