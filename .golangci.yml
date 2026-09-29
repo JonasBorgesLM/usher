@@ -1,0 +1,78 @@
+# Strict by intent. usher's defects are security defects: an unchecked error on
+# a store write is a consumption that did not happen (RS-04, RS-11), and an
+# exported identifier without a doc comment is a contract that lives only in
+# the author's head.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - errorlint
+    - exhaustive
+    - forbidigo
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - predeclared
+    - revive
+    - unconvert
+    - unparam
+    - wastedassign
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    exhaustive:
+      default-signifies-exhaustive: true
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # RS-15: secrets are compared in constant time through secret.Value.
+        # bytes.Equal short-circuits on the first differing byte, which is the
+        # timing oracle RS-15 exists to close. A legitimate non-secret use takes
+        # a //nolint:forbidigo with the reason, visible in review.
+        - pattern: ^bytes\.Equal$
+          msg: "RS-15: compare secrets with secret.Value, never bytes.Equal"
+        # RS-36: these types switch off html/template's escaping. A client's
+        # registered name or an error_description wrapped in one is script on
+        # the AS origin (T-21).
+        - pattern: ^template\.(HTML|HTMLAttr|JS|JSStr|CSS|URL|Srcset)$
+          msg: "RS-36: never disable html/template escaping on data from outside the binary"
+        # RNF-10: logs go through log/slog, where RS-23's redaction applies.
+        - pattern: ^(fmt\.Print(f|ln)?|log\.(Print|Fatal|Panic)(f|ln)?)$
+          msg: "RNF-10: log with log/slog so RS-23 redaction applies"
+    gocritic:
+      enabled-tags: [diagnostic, performance, style]
+      disabled-checks: [hugeParam, rangeValCopy]
+    govet:
+      enable-all: true
+      disable: [fieldalignment]
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    revive:
+      rules:
+        - name: exported
+          arguments: [checkPrivateReceivers]
+        - name: package-comments
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck, forbidigo, unparam]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
