@@ -12,6 +12,7 @@ github.com/JonasBorgesLM/moat/redisstore       v0.2.2   ADR-0011 ADR-0003 ADR-00
 github.com/JonasBorgesLM/bastion               v0.2.1   ADR-0016 breaker on the proxy path
 github.com/lestrrat-go/jwx/v4                  *        ADR-0004 JOSE and JWKS
 golang.org/x/crypto                            *        ADR-0005 argon2id
+golang.org/x/text                              *        ADR-0019 identifier canonicalization (NFC + case folding)
 github.com/go-chi/chi/v5                       *        REQUIREMENTS §9 router; plain net/http handlers, works with moat unadapted
 github.com/jackc/pgx/v5                        *        REQUIREMENTS §9 Postgres driver (ADR-0002)
 github.com/redis/go-redis/v9                   *        REQUIREMENTS §9 already required by moat/redisstore

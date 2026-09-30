@@ -119,6 +119,28 @@ func TestAuthenticator_ResponsesAreByteIdentical(t *testing.T) {
 	}
 }
 
+// TestAuthenticator_CanonicalizesBeforeLookup is RS-35 wired into the login
+// path, not just CanonicalizeIdentifier tested in isolation: a user stored
+// under its canonical identifier is still found when Attempt is given a
+// case-variant spelling of the same address.
+//
+// Negative control: with the CanonicalizeIdentifier call removed from
+// Attempt's lookup, this test failed with ErrLoginFailed — the case-variant
+// spelling no longer matched the stored identifier. Verified by hand,
+// restored before committing.
+func TestAuthenticator_CanonicalizesBeforeLookup(t *testing.T) {
+	store := newFakeUserStore(User{ID: "1", Identifier: "alice@example.com", PasswordHash: mustHash(t, "right password")})
+	auth := newTestAuthenticator(t, store)
+
+	result, err := auth.Attempt(context.Background(), "Alice@Example.COM", "right password")
+	if err != nil {
+		t.Fatalf("Attempt with a case-variant identifier: %v", err)
+	}
+	if result.User.Identifier != "alice@example.com" {
+		t.Errorf("Attempt result: got %+v", result)
+	}
+}
+
 // TestAuthenticator_DummyPasswordItselfNeverAuthenticates guards the one
 // case where the dummy hash's own validity would otherwise decide the
 // outcome: if an attacker's guessed password happens to equal the literal

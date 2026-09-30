@@ -47,9 +47,10 @@ func NewAuthenticator(store UserStore, hasher *Hasher, params Params) (*Authenti
 	return &Authenticator{store: store, hasher: hasher, dummyHash: dummyHash}, nil
 }
 
-// Attempt looks up identifier, then calls Verify exactly once — against the
-// resolved user's hash if found, the fixed dummy hash otherwise — and
-// returns LoginResult on success or ErrLoginFailed on any kind of failure.
+// Attempt canonicalizes identifier (RS-35), looks it up, then calls Verify
+// exactly once — against the resolved user's hash if found, the fixed
+// dummy hash otherwise — and returns LoginResult on success or
+// ErrLoginFailed on any kind of failure.
 //
 // An error from the lookup itself, or from Hasher (ErrSaturated, a canceled
 // context), propagates unwrapped: those are infrastructure signals a
@@ -63,7 +64,7 @@ func NewAuthenticator(store UserStore, hasher *Hasher, params Params) (*Authenti
 // proves the sequence (VerifyPassword, NeedsRehash, HashPassword,
 // UpdateHash) composes.
 func (a *Authenticator) Attempt(ctx context.Context, identifier, password string) (LoginResult, error) {
-	u, ok, err := a.store.ByIdentifier(ctx, identifier)
+	u, ok, err := a.store.ByIdentifier(ctx, CanonicalizeIdentifier(identifier))
 	if err != nil {
 		return LoginResult{}, fmt.Errorf("identity: look up identifier: %w", err)
 	}
