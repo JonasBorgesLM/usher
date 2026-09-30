@@ -20,8 +20,9 @@ func mapGetenv(env map[string]string) Getenv {
 // thing it changed, not to an incidentally-also-broken baseline.
 func validEnv() map[string]string {
 	return map[string]string{ // #nosec G101 -- fixed test placeholder, not a real credential
-		"USHER_DATABASE_URL": "postgres://usher:usher@localhost:5432/usher",
-		"USHER_REDIS_ADDR":   "localhost:6379",
+		"USHER_DATABASE_URL":     "postgres://usher:usher@localhost:5432/usher",
+		"USHER_REDIS_ADDR":       "localhost:6379",
+		"USHER_DIRECTLY_EXPOSED": "true",
 	}
 }
 
@@ -125,6 +126,54 @@ func TestLoad_NonPositiveLifetimeFails(t *testing.T) {
 					t.Fatalf("Load succeeded with %s=%s; want an error", lb.env, raw)
 				}
 			})
+		}
+	}
+}
+
+// TestLoad_TrustTopologyMustBeExactlyOneOf is ADR-0010's rule made
+// mechanical, the same shape moat's own preset.Config refuses for the same
+// reason: exactly one of "which CIDRs front this server" or "nothing does"
+// must be stated, never both and never neither.
+//
+// Negative control: with the `len(cfg.TrustedProxyCIDRs) == 0 &&
+// !cfg.DirectlyExposed` check removed, this test's "neither set" case
+// succeeded instead of refusing — verified by hand, restored before
+// committing.
+func TestLoad_TrustTopologyMustBeExactlyOneOf(t *testing.T) {
+	t.Run("neither set", func(t *testing.T) {
+		env := validEnv()
+		delete(env, "USHER_DIRECTLY_EXPOSED")
+		if _, err := Load(mapGetenv(env)); err == nil {
+			t.Fatal("Load succeeded with no trust topology declared; want an error")
+		}
+	})
+
+	t.Run("both set", func(t *testing.T) {
+		env := validEnv()
+		env["USHER_TRUSTED_PROXY_CIDRS"] = "10.0.0.0/8"
+		// USHER_DIRECTLY_EXPOSED is already "true" from validEnv.
+		if _, err := Load(mapGetenv(env)); err == nil {
+			t.Fatal("Load succeeded with both CIDRs and DirectlyExposed set; want an error")
+		}
+	})
+}
+
+func TestLoad_TrustedProxyCIDRsParsed(t *testing.T) {
+	env := validEnv()
+	delete(env, "USHER_DIRECTLY_EXPOSED")
+	env["USHER_TRUSTED_PROXY_CIDRS"] = " 10.0.0.0/8 , 172.28.0.0/24 ,,"
+
+	cfg, err := Load(mapGetenv(env))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"10.0.0.0/8", "172.28.0.0/24"}
+	if len(cfg.TrustedProxyCIDRs) != len(want) {
+		t.Fatalf("TrustedProxyCIDRs = %v, want %v", cfg.TrustedProxyCIDRs, want)
+	}
+	for i, w := range want {
+		if cfg.TrustedProxyCIDRs[i] != w {
+			t.Errorf("TrustedProxyCIDRs[%d] = %q, want %q", i, cfg.TrustedProxyCIDRs[i], w)
 		}
 	}
 }

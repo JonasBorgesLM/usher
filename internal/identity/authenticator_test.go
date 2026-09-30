@@ -119,6 +119,113 @@ func TestAuthenticator_ResponsesAreByteIdentical(t *testing.T) {
 	}
 }
 
+// fakeAccountLimiter is a small, controllable stand-in for
+// AccountRateLimiter. RS-22's own rule -- the account axis is checked
+// identically for existing and non-existent identifiers -- is what these
+// tests need to prove about Authenticator's wiring; a real moat.Limiter
+// over real Redis (verified separately, in internal/store/redis) would
+// only make that harder to control precisely.
+type fakeAccountLimiter struct {
+	allow bool
+	calls []string // keys Allow was called with, in order
+}
+
+func (f *fakeAccountLimiter) Allow(_ context.Context, key string) bool {
+	f.calls = append(f.calls, key)
+	return f.allow
+}
+
+// TestAuthenticator_AccountAxisDeniesIdenticallyForExistingAndNonExistent
+// is the issue's own wording: the account axis is checked before lookup,
+// on the canonicalized identifier, so it cannot distinguish "this account
+// exists and is rate limited" from "this account does not exist" -- both
+// produce ErrRateLimited, and the limiter sees the same key shape either
+// way.
+//
+// This test's own outcome (ErrRateLimited either way) does not change if
+// the axis were checked after the lookup instead of before — the negative
+// control that catches *that* reordering is
+// TestAuthenticator_AccountAxisChecksBeforeLookup below, which asserts the
+// store is never reached at all, not just that the final error matches.
+func TestAuthenticator_AccountAxisDeniesIdenticallyForExistingAndNonExistent(t *testing.T) {
+	limiter := &fakeAccountLimiter{allow: false}
+	store := newFakeUserStore(User{ID: "1", Identifier: "alice@example.com", PasswordHash: mustHash(t, "right password")})
+	hasher, err := NewHasher(4, time.Second, weakParams, 1<<30)
+	if err != nil {
+		t.Fatalf("NewHasher: %v", err)
+	}
+	auth, err := NewAuthenticator(store, hasher, weakParams, WithAccountLimiter(limiter))
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+
+	_, existingErr := auth.Attempt(context.Background(), "alice@example.com", "right password")
+	_, nonExistentErr := auth.Attempt(context.Background(), "nobody@example.com", "anything")
+
+	if !errors.Is(existingErr, ErrRateLimited) {
+		t.Errorf("existing-account attempt while rate limited = %v, want ErrRateLimited", existingErr)
+	}
+	if !errors.Is(nonExistentErr, ErrRateLimited) {
+		t.Errorf("non-existent-account attempt while rate limited = %v, want ErrRateLimited", nonExistentErr)
+	}
+	if existingErr.Error() != nonExistentErr.Error() {
+		t.Errorf("responses differ: %q vs %q", existingErr.Error(), nonExistentErr.Error())
+	}
+}
+
+// TestAuthenticator_AccountAxisChecksBeforeLookup proves the ordering
+// itself, not just the outcome: the limiter is consulted exactly once, on
+// the canonical identifier, and the store is never reached at all when the
+// axis denies — the store lookup happening first would not change
+// Attempt's return value in this test, but it would mean an attacker's
+// request always costs a database round trip before being throttled,
+// which is exactly the asymmetry RS-22's account axis exists to avoid.
+//
+// Negative control: with the account-axis check moved to after
+// `a.store.ByIdentifier`, this test observed the store being called (its
+// own call count went from 0 to 1) before the limiter ever ran — verified
+// by hand, restored before committing.
+func TestAuthenticator_AccountAxisChecksBeforeLookup(t *testing.T) {
+	limiter := &fakeAccountLimiter{allow: false}
+	store := newFakeUserStore()
+	auth := newTestAuthenticatorWithLimiter(t, store, limiter)
+
+	if _, err := auth.Attempt(context.Background(), "Alice@Example.COM", "anything"); !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("Attempt = %v, want ErrRateLimited", err)
+	}
+	if store.calls != 0 {
+		t.Errorf("store was looked up %d times; want 0 — the account axis should have denied before any lookup", store.calls)
+	}
+	if len(limiter.calls) != 1 || limiter.calls[0] != "alice@example.com" {
+		t.Errorf("limiter calls = %v, want exactly one call with the canonicalized identifier", limiter.calls)
+	}
+}
+
+func newTestAuthenticatorWithLimiter(t *testing.T, store UserStore, limiter AccountRateLimiter) *Authenticator {
+	t.Helper()
+	hasher, err := NewHasher(4, time.Second, weakParams, 1<<30)
+	if err != nil {
+		t.Fatalf("NewHasher: %v", err)
+	}
+	auth, err := NewAuthenticator(store, hasher, weakParams, WithAccountLimiter(limiter))
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	return auth
+}
+
+// TestAuthenticator_NoLimiterConfiguredNeverDenies is the zero-value case:
+// an Authenticator built without WithAccountLimiter enforces no account
+// axis at all, rather than panicking on a nil interface.
+func TestAuthenticator_NoLimiterConfiguredNeverDenies(t *testing.T) {
+	store := newFakeUserStore(User{ID: "1", Identifier: "alice@example.com", PasswordHash: mustHash(t, "right password")})
+	auth := newTestAuthenticator(t, store) // no WithAccountLimiter
+
+	if _, err := auth.Attempt(context.Background(), "alice@example.com", "right password"); err != nil {
+		t.Fatalf("Attempt without a configured limiter: %v", err)
+	}
+}
+
 // TestAuthenticator_CanonicalizesBeforeLookup is RS-35 wired into the login
 // path, not just CanonicalizeIdentifier tested in isolation: a user stored
 // under its canonical identifier is still found when Attempt is given a
