@@ -12,9 +12,15 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/JonasBorgesLM/moat/ratelimit"
+	"github.com/JonasBorgesLM/moat/realip"
 )
 
 // Config is every operational setting Load produces.
@@ -34,6 +40,14 @@ type Config struct {
 	RefreshAbsoluteTTL time.Duration
 	SessionIdleTTL     time.Duration // RS-31
 	SessionAbsoluteTTL time.Duration // RS-31
+
+	// TrustedProxyCIDRs and DirectlyExposed are ADR-0010's inbound trust
+	// decision — who fronts usher itself, for the IP axis of RS-22 (and any
+	// other realip-derived key). Exactly one of the two holds: an empty
+	// CIDR list with DirectlyExposed false is a startup error (RNF-05),
+	// the same shape moat's own preset.Config refuses for the same reason.
+	TrustedProxyCIDRs []string
+	DirectlyExposed   bool
 }
 
 // lifetimeBound names one RF-12 lifetime: the environment variable that
@@ -131,5 +145,47 @@ func Load(getenv Getenv) (Config, error) {
 		lb.assign(&cfg, d)
 	}
 
+	if raw, ok := getenv("USHER_TRUSTED_PROXY_CIDRS"); ok {
+		for part := range strings.SplitSeq(raw, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				cfg.TrustedProxyCIDRs = append(cfg.TrustedProxyCIDRs, trimmed)
+			}
+		}
+	}
+	if raw, ok := getenv("USHER_DIRECTLY_EXPOSED"); ok {
+		exposed, err := strconv.ParseBool(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("config: USHER_DIRECTLY_EXPOSED=%q is not a valid boolean: %w", raw, err)
+		}
+		cfg.DirectlyExposed = exposed
+	}
+	if len(cfg.TrustedProxyCIDRs) > 0 && cfg.DirectlyExposed {
+		return Config{}, errors.New("config: USHER_TRUSTED_PROXY_CIDRS is set but USHER_DIRECTLY_EXPOSED is also set; pick one")
+	}
+	if len(cfg.TrustedProxyCIDRs) == 0 && !cfg.DirectlyExposed {
+		return Config{}, errors.New("config: set USHER_TRUSTED_PROXY_CIDRS to your proxy's CIDRs, or USHER_DIRECTLY_EXPOSED=true if nothing fronts this server; without one the rate limiter's IP axis would count every client as the same client")
+	}
+
 	return cfg, nil
+}
+
+// BuildKeyFunc derives a moat/ratelimit.KeyFunc from the validated trust
+// topology (ADR-0010, RS-22's IP axis): realip.New(c.TrustedProxyCIDRs)'s
+// KeyFunc when proxy CIDRs are declared, or ratelimit.RemoteAddrKey — moat's
+// own default, which reads r.RemoteAddr directly and never consults a
+// forwarded header — when DirectlyExposed is set instead.
+//
+// Load already guarantees exactly one of the two holds, so BuildKeyFunc
+// itself has nothing left to validate; it exists so that whichever
+// middleware chain wires the IP axis (REQUIREMENTS §7.2) does not re-derive
+// this choice, or its consequences, on its own.
+func (c Config) BuildKeyFunc() (ratelimit.KeyFunc, error) {
+	if c.DirectlyExposed {
+		return ratelimit.RemoteAddrKey, nil
+	}
+	extractor, err := realip.New(c.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("config: build trusted-proxy extractor: %w", err)
+	}
+	return extractor.KeyFunc(), nil
 }
