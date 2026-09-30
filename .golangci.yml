@@ -71,6 +71,12 @@ linters:
     rules:
       - path: _test\.go
         linters: [errcheck, forbidigo, unparam]
+      # scripts/timing-login's stdout is REQUIREMENTS §10's committed report
+      # -- aligned columns meant for a human to read and diff against a
+      # future baseline, not a server log RS-23 redaction needs to reach.
+      # RNF-10's rule is about server-side logging; this file has none.
+      - path: scripts/timing-login/main\.go
+        linters: [forbidigo]
 
 formatters:
   enable:
