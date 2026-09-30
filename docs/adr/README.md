@@ -34,6 +34,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | — |
 | [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2) |
 | [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
+| [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |
 
 ## Reopening criteria on the record
 

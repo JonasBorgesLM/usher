@@ -84,7 +84,12 @@ func run() error {
 }
 
 func ensureProbeUser(ctx context.Context, store *postgres.UserStore) error {
-	if _, ok, err := store.ByIdentifier(ctx, probeIdentifier); err != nil {
+	// Canonicalized here, at creation (RS-35), matching Authenticator's own
+	// canonicalization at lookup — probeIdentifier is already lowercase
+	// ASCII, so this is a no-op today, but the call site stays consistent
+	// with cmd/seed's rather than being the one place that assumes so.
+	canonical := identity.CanonicalizeIdentifier(probeIdentifier)
+	if _, ok, err := store.ByIdentifier(ctx, canonical); err != nil {
 		return fmt.Errorf("check for existing probe user: %w", err)
 	} else if ok {
 		return nil
@@ -93,7 +98,7 @@ func ensureProbeUser(ctx context.Context, store *postgres.UserStore) error {
 	if err != nil {
 		return fmt.Errorf("hash probe password: %w", err)
 	}
-	if _, err := store.CreateUser(ctx, postgres.SeedUser{Identifier: probeIdentifier, PasswordHash: hash, Role: "user"}); err != nil {
+	if _, err := store.CreateUser(ctx, postgres.SeedUser{Identifier: canonical, PasswordHash: hash, Role: "user"}); err != nil {
 		return fmt.Errorf("create probe user: %w", err)
 	}
 	return nil

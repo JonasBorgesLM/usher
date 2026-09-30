@@ -69,24 +69,29 @@ func run() error {
 	slog.Warn("every seeded user shares one fixed password; local development only", "password", devPassword)
 
 	for _, seed := range seedRoles {
-		existing, ok, err := store.ByIdentifier(ctx, seed.identifier)
+		// Canonicalized once, here, at creation (RS-35) — Authenticator
+		// canonicalizes again at lookup, so a stored identifier that was
+		// not already canonical would never match a real login attempt.
+		canonical := identity.CanonicalizeIdentifier(seed.identifier)
+
+		existing, ok, err := store.ByIdentifier(ctx, canonical)
 		if err != nil {
-			return fmt.Errorf("check for existing user %s: %w", seed.identifier, err)
+			return fmt.Errorf("check for existing user %s: %w", canonical, err)
 		}
 		if ok {
-			slog.Info("already exists, skipping", "identifier", seed.identifier, "id", existing.ID, "role", existing.Role)
+			slog.Info("already exists, skipping", "identifier", canonical, "id", existing.ID, "role", existing.Role)
 			continue
 		}
 
 		hash, err := identity.HashPassword(devPassword, identity.DefaultParams)
 		if err != nil {
-			return fmt.Errorf("hash password for %s: %w", seed.identifier, err)
+			return fmt.Errorf("hash password for %s: %w", canonical, err)
 		}
-		id, err := store.CreateUser(ctx, postgres.SeedUser{Identifier: seed.identifier, PasswordHash: hash, Role: seed.role})
+		id, err := store.CreateUser(ctx, postgres.SeedUser{Identifier: canonical, PasswordHash: hash, Role: seed.role})
 		if err != nil {
-			return fmt.Errorf("create user %s: %w", seed.identifier, err)
+			return fmt.Errorf("create user %s: %w", canonical, err)
 		}
-		slog.Info("created", "identifier", seed.identifier, "id", id, "role", seed.role)
+		slog.Info("created", "identifier", canonical, "id", id, "role", seed.role)
 	}
 	return nil
 }
