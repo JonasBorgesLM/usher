@@ -61,11 +61,11 @@ type BrowserSession struct {
 // IdleUntil or ExpiresAt.
 var ErrSessionNotFound = errors.New("session: browser session not found")
 
-// SessionStore is Redis-backed.
+// SessionStore is Redis-backed. Renaming only this one to "Store" would
+// break the naming parallel with ChallengeStore in this same package,
+// which is why it keeps the stutter instead of "fixing" it.
 //
-// renaming only this one to "Store" would break that parallel, not improve it.
-//
-//nolint:revive // matches ChallengeStore's naming in this same package;
+//nolint:revive // the stutter above is intentional, not an oversight
 type SessionStore interface {
 	Save(ctx context.Context, s BrowserSession) error
 
