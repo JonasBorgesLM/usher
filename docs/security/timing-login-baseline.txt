@@ -1,0 +1,27 @@
+timing-login baseline — 2026-09-29, local development machine, unloaded
+
+$ docker compose up -d
+$ go run ./scripts/timing-login
+
+timing-login: 100 samples per group, interleaved. DefaultParams (m=65536 KiB, t=3, p=4)
+
+existing identifier, wrong password:  mean=48.080887ms  stddev=10.603404ms  p50=43.401584ms  p95=69.228917ms  p99=76.792625ms  min=39.975125ms  max=105.185875ms
+non-existent identifier            :  mean=47.308213ms  stddev=9.429294ms   p50=43.982208ms  p95=65.575459ms  p99=74.501292ms  min=40.195917ms  max=98.98125ms
+
+difference in means: 772.674µs
+REQUIREMENTS §10: read the two distributions; this is a regression signal, not a threshold to automate.
+
+---
+
+Reading this baseline: the difference in means (0.77ms) is roughly 7% of
+either group's standard deviation (~10ms) — well inside normal run-to-run
+noise, not a distinguishable signal. Both distributions' shape (mean, p50,
+p95, stddev) track each other closely across the board, which is what RS-14's
+timing surface is supposed to look like: an attacker measuring login latency
+cannot tell an existing account from a non-existent one from this data.
+
+A future run whose means diverge by more than roughly one standard deviation,
+or whose p95/p99 diverge while means stay close (a tail effect, not just a
+shift), is the regression signal worth investigating — most likely a code
+path added on one side of the ok/!ok branch in Authenticator.Attempt without
+its counterpart on the other.
