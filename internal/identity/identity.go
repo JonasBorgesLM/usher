@@ -49,12 +49,6 @@ type Client struct {
 // outside the caller's allow-list, or any other shape RF-01 forbids. Load
 // callers (internal/config, RNF-05) turn this into a startup refusal, never
 // a runtime surprise.
-var ErrInvalidClientRegistry = errors.New("identity: invalid client registry")
-
-// LoadClients parses and validates a client registry file (RF-01) against
-// allowedSchemes.
 //
-// Implemented in M2 (REQUIREMENTS §11).
-func LoadClients(path string, allowedSchemes []string) ([]Client, error) {
-	panic("identity: LoadClients not implemented (M2)")
-}
+// LoadClients and Client.AuthenticateSecret are in client.go.
+var ErrInvalidClientRegistry = errors.New("identity: invalid client registry")
