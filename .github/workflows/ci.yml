@@ -24,6 +24,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # lestrrat-go/jwx/v4's jwk package imports encoding/json/v2 and
+  # encoding/json/jsontext, both gated behind this experiment (ADR-0004
+  # amendment). Every job below touches code that imports internal/keys,
+  # directly or transitively, so this is workflow-level rather than
+  # per-job.
+  GOEXPERIMENT: jsonv2
   # The floor (ADR-0008). Build and test here.
   GO_VERSION: "1.26.6"
   # govulncheck runs on the newest supported toolchain: scanning against a
