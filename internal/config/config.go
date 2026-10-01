@@ -14,6 +14,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,12 @@ import (
 type Config struct {
 	DatabaseURL string
 	RedisAddr   string
+
+	// Issuer is this AS's own identity (RS-29/RFC 9207): carried as `iss`
+	// on every /authorize redirect, success or error, so a client talking
+	// to more than one AS can tell them apart (T-04). An absolute URL, by
+	// OIDC discovery's own convention for the issuer identifier.
+	Issuer string
 
 	// The seven lifetimes REQUIREMENTS RF-12 bounds. Each has a default used
 	// when its environment variable is unset, and an upper bound a
@@ -124,8 +131,16 @@ func Load(getenv Getenv) (Config, error) {
 	if !ok || redisAddr == "" {
 		return Config{}, fmt.Errorf("config: USHER_REDIS_ADDR is required and was not set")
 	}
+	issuer, ok := getenv("USHER_ISSUER")
+	if !ok || issuer == "" {
+		return Config{}, fmt.Errorf("config: USHER_ISSUER is required and was not set")
+	}
+	issuerURL, err := url.Parse(issuer)
+	if err != nil || !issuerURL.IsAbs() {
+		return Config{}, fmt.Errorf("config: USHER_ISSUER=%q is not an absolute URL", issuer)
+	}
 
-	cfg := Config{DatabaseURL: dbURL, RedisAddr: redisAddr}
+	cfg := Config{DatabaseURL: dbURL, RedisAddr: redisAddr, Issuer: issuer}
 
 	for _, lb := range lifetimeBounds {
 		d := lb.def

@@ -148,6 +148,9 @@ func testDeps(t *testing.T) routerDeps {
 		Challenges:         newFakeChallengeStore(),
 		CSRFProtector:      protector,
 		LoginLimiter:       ratelimit.New(1000, 1000), // generous: not what this file's tests exercise
+		AuthorizeLimiter:   ratelimit.New(1000, 1000), // generous: not what this file's tests exercise
+		Issuer:             "https://usher.test",
+		ChallengeTTL:       5 * time.Minute,
 		SessionIdleTTL:     time.Hour,
 		SessionAbsoluteTTL: 24 * time.Hour,
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },

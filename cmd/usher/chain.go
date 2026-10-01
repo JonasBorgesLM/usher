@@ -60,6 +60,14 @@ var browserForms = routeGroup{name: "browser-forms", csrf: true, noStore: true}
 // attacker to throttle.
 var operational = routeGroup{name: "operational", csrf: false, noStore: false}
 
+// authorizeGroup is REQUIREMENTS §7.2's "/authorize" row: no CSRF (the
+// request carries no form the attacker-controlled double-submit model
+// applies to; RS-28's own ordering, not CSRF, is what keeps this route
+// safe), no-store does not apply (no credential in the response), and a
+// rate limit of its own — "moderate," distinct from /login's strict
+// two-axis one, passed at registration rather than baked into the group.
+var authorizeGroup = routeGroup{name: "authorize", csrf: false, noStore: false}
+
 // wrap composes h under g's chain, around limiter's IP axis and protector's
 // CSRF check — ratelimit, then validate.MaxBodyBytes, then csrf if the group
 // carries it, then no-store if the group carries it, innermost to outermost
