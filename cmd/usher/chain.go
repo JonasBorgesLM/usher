@@ -52,6 +52,14 @@ type routeGroup struct {
 // separate on purpose — see internal/identity/authenticator.go).
 var browserForms = routeGroup{name: "browser-forms", csrf: true, noStore: true}
 
+// operational is /healthz and /readyz: not in REQUIREMENTS §7.2's table at
+// all (that table is the OAuth/OIDC protocol surface), no CSRF, no-store
+// does not apply to a status response the way RS-26 means it, and —
+// registered with a nil limiter (see wrap) — no rate limit, since an
+// orchestrator polling every few seconds is the expected caller, not an
+// attacker to throttle.
+var operational = routeGroup{name: "operational", csrf: false, noStore: false}
+
 // wrap composes h under g's chain, around limiter's IP axis and protector's
 // CSRF check — ratelimit, then validate.MaxBodyBytes, then csrf if the group
 // carries it, then no-store if the group carries it, innermost to outermost
@@ -62,6 +70,13 @@ var browserForms = routeGroup{name: "browser-forms", csrf: true, noStore: true}
 // silently serving the route unprotected — the same reasoning
 // moat/csrf.Token itself gives for returning a bool instead of a bare
 // string: a wiring mistake here must be loud, not a quietly open CSRF hole.
+//
+// A nil limiter means the group carries no rate limiting at all, rather
+// than panicking: unlike CSRF, "no limiter" is a deliberate, valid choice
+// for a route an orchestrator polls every few seconds (operational, below)
+// and for which a limit could produce a false negative on a tight poll
+// interval — a wiring mistake here is "forgot the limiter," not "forgot
+// that this route needs one."
 func (g routeGroup) wrap(limiter *ratelimit.Limiter, protector *csrf.Protector, h http.Handler) http.Handler {
 	if g.csrf {
 		if protector == nil {
@@ -70,7 +85,9 @@ func (g routeGroup) wrap(limiter *ratelimit.Limiter, protector *csrf.Protector, 
 		h = protector.Middleware(h)
 	}
 	h = validate.MaxBodyBytes(maxFormBodyBytes)(h)
-	h = limiter.Middleware(h)
+	if limiter != nil {
+		h = limiter.Middleware(h)
+	}
 	if g.noStore {
 		h = secureheaders.NoStore(h)
 	}
