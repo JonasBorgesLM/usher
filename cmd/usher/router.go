@@ -28,10 +28,11 @@ import (
 	"github.com/JonasBorgesLM/moat/secureheaders"
 	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
+	"github.com/JonasBorgesLM/usher/internal/oauth"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
 
-//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl
+//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl templates/consent_granted.html.tmpl
 var templateFS embed.FS
 
 // routerDeps is everything newRouter needs. Each field is an interface or a
@@ -58,6 +59,9 @@ type routerDeps struct {
 	Issuer           string
 	ChallengeTTL     time.Duration
 
+	// Consents is /consent's own (#28): RF-13's per-(subject, client) grant.
+	Consents oauth.ConsentStore
+
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
 	Now                func() time.Time // defaults to time.Now when nil
@@ -72,6 +76,7 @@ type routerDeps struct {
 // supplies the set of routes to check it against.
 var routeGroups = map[string]routeGroup{
 	"/login":     browserForms,
+	"/consent":   browserForms,
 	"/healthz":   operational,
 	"/readyz":    operational,
 	"/authorize": authorizeGroup,
@@ -113,6 +118,22 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:       deps.Logger,
 	}
 
+	consentTmpl := template.Must(template.ParseFS(templateFS, "templates/consent.html.tmpl"))
+	consentErrorTmpl := template.Must(template.ParseFS(templateFS, "templates/consent_error.html.tmpl"))
+	consentGrantedTmpl := template.Must(template.ParseFS(templateFS, "templates/consent_granted.html.tmpl"))
+
+	consent := &consentHandler{
+		clients:     deps.Clients,
+		challenges:  deps.Challenges,
+		consents:    deps.Consents,
+		protector:   deps.CSRFProtector,
+		issuer:      deps.Issuer,
+		consentTmpl: consentTmpl,
+		grantedTmpl: consentGrantedTmpl,
+		errorTmpl:   consentErrorTmpl,
+		logger:      deps.Logger,
+	}
+
 	r := chi.NewRouter()
 	// RequestID first, so every layer after it — including a handler's own
 	// error logging — can correlate by it (RNF-10; see log.go's
@@ -136,6 +157,11 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodGet, "/authorize",
 		authorizeGroup.wrap(deps.AuthorizeLimiter, nil, authorize))
+
+	r.Method(http.MethodGet, "/consent",
+		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.get)))
+	r.Method(http.MethodPost, "/consent",
+		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.post)))
 
 	return r
 }

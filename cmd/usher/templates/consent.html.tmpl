@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Authorize access</title>
+</head>
+<body>
+<h1>Authorize access</h1>
+<p><strong>{{.ClientID}}</strong> is requesting the following access:</p>
+<ul>
+{{range .Scope}}<li>{{.}}</li>{{end}}
+</ul>
+<form method="post" action="/consent">
+<input type="hidden" name="moat.csrf" value="{{.CSRFToken}}">
+<input type="hidden" name="login_challenge" value="{{.Challenge}}">
+<button type="submit" name="decision" value="allow">Allow</button>
+<button type="submit" name="decision" value="deny">Deny</button>
+</form>
+</body>
+</html>
