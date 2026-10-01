@@ -10,6 +10,7 @@ require (
 	github.com/JonasBorgesLM/bastion v0.2.1
 	github.com/JonasBorgesLM/moat v0.2.0
 	github.com/JonasBorgesLM/moat/redisstore v0.2.2
+	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/testcontainers/testcontainers-go v0.44.0
