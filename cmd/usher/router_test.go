@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -334,6 +335,16 @@ func TestLoginRoute_SecurityHeadersOnEveryResponse(t *testing.T) {
 // secureheaders.Nonce(r) into the template data, this test failed — the
 // script rendered with nonce="" while the header carried the real value.
 // Verified by hand, restored before committing.
+//
+// Caught flaky in CI (#75): the comparison originally built the expected
+// `<script nonce="...">` string from the header's raw nonce value directly,
+// but html/template's attribute escaper (stricter than the exported
+// html.EscapeString) turns a "+" in a base64 nonce into "&#43;". Passed
+// locally and in CI until a run happened to draw a nonce containing one.
+// Fixed by extracting the rendered nonce and unescaping it instead of
+// escaping the expected value forward — html.UnescapeString reverses any
+// valid HTML entity, so it does not need to replicate the unexported
+// escaper exactly.
 func TestLoginRoute_InlineScriptNonceMatchesCSP(t *testing.T) {
 	mux := newRouter(testDeps(t))
 	_, _, rec := getLogin(t, mux)
@@ -351,9 +362,25 @@ func TestLoginRoute_InlineScriptNonceMatchesCSP(t *testing.T) {
 	headerNonce := rest[:end]
 
 	body := rec.Body.String()
-	wantScript := `<script nonce="` + headerNonce + `">`
-	if !strings.Contains(body, wantScript) {
-		t.Errorf("rendered page does not contain %q; body: %s", wantScript, body)
+	const marker = `<script nonce="`
+	mi := strings.Index(body, marker)
+	if mi < 0 {
+		t.Fatalf("rendered page has no <script nonce=\"...\"> tag: %s", body)
+	}
+	rest = body[mi+len(marker):]
+	mend := strings.Index(rest, `"`)
+	if mend < 0 {
+		t.Fatalf("rendered page's script nonce attribute is unterminated: %s", body)
+	}
+	// html/template's attribute escaper is stricter than the exported
+	// html.EscapeString (it also escapes "+", which a base64 nonce can
+	// contain, to "&#43;") and is not itself exported, so this compares the
+	// other direction: html.UnescapeString correctly reverses any valid
+	// HTML entity, including that one, back to the raw nonce the header
+	// carries.
+	renderedNonce := html.UnescapeString(rest[:mend])
+	if renderedNonce != headerNonce {
+		t.Errorf("rendered script nonce = %q, want the CSP header's nonce %q", renderedNonce, headerNonce)
 	}
 }
 
