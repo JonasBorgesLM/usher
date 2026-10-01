@@ -179,9 +179,11 @@ implementation.
 
 ## Commands
 
-Single module. Go 1.26.6 or newer (ADR-0008).
+Single module. Go 1.26.6 or newer (ADR-0008). `GOEXPERIMENT=jsonv2` must be
+set (ADR-0004's amendment) — `jwx/v4/jwk` does not compile without it.
 
 ```bash
+export GOEXPERIMENT=jsonv2
 go build ./...
 go vet ./...
 go test -race ./...

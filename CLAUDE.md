@@ -43,6 +43,11 @@ fail silently (ADR-0002). Only state whose loss fails safe goes in Redis.
 
 - **Go 1.26.6 floor** — a security floor inherited from `moat/redisstore`, not a
   feature choice (ADR-0008). Do not lower it; do not "simplify" it to `1.26`.
+- **`GOEXPERIMENT=jsonv2` is required** (ADR-0004's amendment) — `jwx/v4/jwk`
+  imports `encoding/json/v2`/`jsontext`, which do not compile without it. Set
+  it before any `go build`/`test`/`vet`/lint/`gosec`/`govulncheck` invocation
+  that touches `internal/keys` or anything built on it; CI sets it
+  workflow-wide in `.github/workflows/ci.yml`.
 - `net/http` + `chi`, `lestrrat-go/jwx/v4`, `pgx/v5`, `go-redis/v9`,
   `golang.org/x/crypto/argon2`, `testcontainers-go`.
 - First-party: `moat` + `moat/redisstore` (edge security), `bastion` (outbound
@@ -54,6 +59,7 @@ fail silently (ADR-0002). Only state whose loss fails safe goes in Redis.
 ## Commands
 
 ```bash
+export GOEXPERIMENT=jsonv2                # required from here on, see Stack
 go build ./... && go vet ./... && go test -race ./...
 go test -tags=integration -race ./...     # needs Docker (testcontainers)
 golangci-lint run ./...

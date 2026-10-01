@@ -36,3 +36,31 @@ part, that is a reason to revisit, not to start there.
 ## Reopening criterion
 Reopen if `jwx`'s cache cannot express RS-09's rate-limited refetch without
 wrapping it in more code than a hand-written cache would be.
+
+## Amendment — GOEXPERIMENT=jsonv2 is required (#24)
+
+Discovered implementing `internal/keys` (issue #24, not anticipated when this
+ADR was written): `jwx/v4`'s `jwk` package imports `encoding/json/v2` and
+`encoding/json/jsontext`, both gated behind Go's `jsonv2` experiment. Without
+`GOEXPERIMENT=jsonv2` set, any build that imports `jwx/v4/jwk` — and therefore
+`internal/keys`, and transitively almost everything built on it — fails to
+compile, not merely to lint.
+
+**Accepted, not reopened.** The alternative considered was reverting to an
+earlier `jwx` major version or to `golang-jwt/v5` (this ADR's own rejected
+alternative), both of which would mean writing JWKS parsing and `kid`
+resolution by hand — exactly the cost this ADR already weighed against
+`golang-jwt/v5` and rejected. `GOEXPERIMENT=jsonv2` is set workflow-wide in
+`.github/workflows/ci.yml` and documented in `CLAUDE.md`'s Stack section.
+
+**What this costs, stated rather than hidden:** `jsonv2` is an experimental
+Go feature with no compatibility guarantee across Go releases, in a
+dependency that sits in the signing path. If a future Go release changes or
+removes it, this project's floor (ADR-0008) pins an exact toolchain anyway,
+so the risk is bounded to upgrade time, not runtime — the same shape as
+`moat`'s pre-1.0 trust decision (ADR-0011).
+
+**Reopening criterion, in addition to the one above:** reopen if a stable
+(non-experimental) Go release changes `jsonv2`'s behavior in a way that
+breaks `internal/keys`, or if `jwx` drops the experimental dependency in a
+later `v4` patch — either would remove the reason for this amendment.
