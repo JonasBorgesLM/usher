@@ -75,6 +75,34 @@ func TestAuthorize_ValidRequestRedirectsToLogin(t *testing.T) {
 	}
 }
 
+// TestAuthorize_LoginURLCarriesOnlyChallengeID is #27's own done-when
+// (RS-05: no request parameter in the query string): the redirect to
+// /login carries exactly one query parameter, login_challenge, never the
+// original client_id, redirect_uri, scope, state or code_challenge.
+//
+// Negative control: with the redirect target in ServeHTTP changed to
+// "/login?"+q.Encode()+"&login_challenge="+id (forwarding the original
+// query alongside the challenge id), this test failed -- the Location
+// carried 8 parameters instead of 1, including client_id and
+// code_challenge in the clear. Verified by hand, restored before
+// committing.
+func TestAuthorize_LoginURLCarriesOnlyChallengeID(t *testing.T) {
+	mux := newRouter(authorizeDeps(t, testClient()))
+	rec := doAuthorize(t, mux, validAuthorizeQuery())
+
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	q := loc.Query()
+	if len(q) != 1 {
+		t.Fatalf("Location query has %d parameters, want exactly 1 (login_challenge): %s", len(q), loc)
+	}
+	if _, ok := q["login_challenge"]; !ok {
+		t.Errorf("Location's one parameter is not login_challenge: %s", loc)
+	}
+}
+
 // TestAuthorize_UnknownClientRendersLocally is RS-28 step 1: no redirect
 // target exists yet, so none is used.
 //
