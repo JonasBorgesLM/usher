@@ -103,10 +103,16 @@ func (h *authorizeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authorizeHandler) lookupClient(clientID string) (identity.Client, bool) {
+	return lookupClient(h.clients, clientID)
+}
+
+// lookupClient is shared with consent.go: both handlers resolve a
+// challenge or request's client_id against the same static registry.
+func lookupClient(clients []identity.Client, clientID string) (identity.Client, bool) {
 	if clientID == "" {
 		return identity.Client{}, false
 	}
-	for _, c := range h.clients {
+	for _, c := range clients {
 		if c.ID == clientID {
 			return c, true
 		}
@@ -125,37 +131,12 @@ func (h *authorizeHandler) renderError(w http.ResponseWriter, r *http.Request, m
 }
 
 // redirectError is RS-28 step 3's failure path: redirectURI is already
-// verified, so the error is reported to it, per RFC 6749 §4.1.2.1, always
-// carrying iss (RS-29/RFC 9207) and echoing state unchanged when the
-// request carried one (RS-03).
+// verified, so the error is reported to it via the shared RFC 6749
+// §4.1.2.1 helper (oauth_errors.go) that consent.go's denial path also
+// uses.
 func (h *authorizeHandler) redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, errCode, description string) {
-	u, err := url.Parse(redirectURI)
-	if err != nil {
-		// redirectURI was already exact-matched against the client's
-		// registered list, and LoadClients refuses an unparsable
-		// redirect_uri at startup (#25) -- this path is defensive, not
-		// expected to be reachable.
-		h.logger.ErrorContext(r.Context(), "authorize: parse verified redirect_uri", "error", err)
-		h.renderError(w, r, "internal error")
-		return
-	}
-	q := u.Query()
-	q.Set("error", errCode)
-	if description != "" {
-		q.Set("error_description", description)
-	}
-	if state != "" {
-		q.Set("state", state)
-	}
-	q.Set("iss", h.issuer)
-	u.RawQuery = q.Encode()
-	// #nosec G710 -- every call site in this file reaches redirectError
-	// only after exactRedirectURIMatch has already confirmed redirectURI
-	// against the client's registered list (RS-28 step 2); that is the
-	// actual control, asserted by TestAuthorize_RedirectURIVariantsRejected
-	// and TestAuthorize_BothRedirectURIAndPKCEFailGetsNonRedirectingResponse,
-	// not a taint-analysis-shaped one at this call.
-	http.Redirect(w, r, u.String(), http.StatusFound)
+	redirectOAuthError(w, r, h.logger, h.issuer, redirectURI, state, errCode, description,
+		func(message string) { h.renderError(w, r, message) })
 }
 
 // exactRedirectURIMatch is RS-02: no prefix match, no wildcard, no
