@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
@@ -93,6 +94,10 @@ func newRouter(deps routerDeps) *chi.Mux {
 	}
 
 	r := chi.NewRouter()
+	// RequestID first, so every layer after it — including a handler's own
+	// error logging — can correlate by it (RNF-10; see log.go's
+	// requestIDHandler, which is what actually reads this back out).
+	r.Use(middleware.RequestID)
 	// secureheaders is the fixed order's outermost, universal layer (see
 	// chain.go) — WithNonce enables RS-36's per-request script nonce for
 	// login's template; a route group that never renders a script still
