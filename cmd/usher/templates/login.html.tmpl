@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in</title>
+</head>
+<body>
+<h1>Sign in</h1>
+{{if .Error}}<p role="alert">{{.Error}}</p>{{end}}
+<form method="post" action="/login">
+<input type="hidden" name="moat.csrf" value="{{.CSRFToken}}">
+{{if .Challenge}}<input type="hidden" name="login_challenge" value="{{.Challenge}}">{{end}}
+<label for="identifier">Email</label>
+<input id="identifier" name="identifier" type="email" autocomplete="username" required>
+<label for="password">Password</label>
+<input id="password" name="password" type="password" autocomplete="current-password" required>
+<button type="submit">Sign in</button>
+</form>
+<script nonce="{{.Nonce}}">document.getElementById("identifier").focus();</script>
+</body>
+</html>
