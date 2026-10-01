@@ -22,6 +22,7 @@ func validEnv() map[string]string {
 	return map[string]string{ // #nosec G101 -- fixed test placeholder, not a real credential
 		"USHER_DATABASE_URL":     "postgres://usher:usher@localhost:5432/usher",
 		"USHER_REDIS_ADDR":       "localhost:6379",
+		"USHER_ISSUER":           "https://usher.example.test",
 		"USHER_DIRECTLY_EXPOSED": "true",
 	}
 }
@@ -54,7 +55,7 @@ func TestLoad_DefaultsApplyWhenLifetimesUnset(t *testing.T) {
 // rather than one hand-picked case, so adding a third required field without
 // a matching test case here is a gap this test would otherwise hide.
 func TestLoad_MissingRequiredField(t *testing.T) {
-	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR"} {
+	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR", "USHER_ISSUER"} {
 		t.Run(key, func(t *testing.T) {
 			env := validEnv()
 			delete(env, key)
@@ -75,6 +76,22 @@ func TestLoad_MissingRequiredField(t *testing.T) {
 			t.Fatal("Load succeeded with an empty USHER_DATABASE_URL; want an error")
 		}
 	})
+}
+
+// TestLoad_IssuerMustBeAbsoluteURL is RS-29's own prerequisite: iss is
+// meaningless if it is not even a well-formed issuer identifier.
+//
+// Negative control: with the `!issuerURL.IsAbs()` half of Load's check
+// removed, this test failed — a relative USHER_ISSUER loaded successfully.
+// Verified by hand, restored before committing.
+func TestLoad_IssuerMustBeAbsoluteURL(t *testing.T) {
+	for _, bad := range []string{"not-a-url", "/relative/path", "usher.example.test"} {
+		env := validEnv()
+		env["USHER_ISSUER"] = bad
+		if _, err := Load(mapGetenv(env)); err == nil {
+			t.Errorf("Load succeeded with USHER_ISSUER=%q, want an error", bad)
+		}
+	}
 }
 
 // TestLoad_LifetimeAboveBoundFails is RF-12's bound, tested against

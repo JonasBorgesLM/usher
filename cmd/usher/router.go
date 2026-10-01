@@ -31,7 +31,7 @@ import (
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
 
-//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl
+//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl
 var templateFS embed.FS
 
 // routerDeps is everything newRouter needs. Each field is an interface or a
@@ -50,6 +50,14 @@ type routerDeps struct {
 
 	ReadinessChecks []ReadinessCheck // RNF-10's /readyz dependencies
 
+	// Clients and Issuer are /authorize's own (#26): the static registry
+	// (#25) looked up by client_id, and RS-29's iss, carried on every
+	// error redirect.
+	Clients          []identity.Client
+	AuthorizeLimiter *ratelimit.Limiter // REQUIREMENTS §7.2's "moderate" rate for /authorize
+	Issuer           string
+	ChallengeTTL     time.Duration
+
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
 	Now                func() time.Time // defaults to time.Now when nil
@@ -63,9 +71,10 @@ type routerDeps struct {
 // than keeping a second, independently-maintained list; chi.Walk is what
 // supplies the set of routes to check it against.
 var routeGroups = map[string]routeGroup{
-	"/login":   browserForms,
-	"/healthz": operational,
-	"/readyz":  operational,
+	"/login":     browserForms,
+	"/healthz":   operational,
+	"/readyz":    operational,
+	"/authorize": authorizeGroup,
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -78,6 +87,17 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	loginTmpl := template.Must(template.ParseFS(templateFS, "templates/login.html.tmpl"))
 	loggedInTmpl := template.Must(template.ParseFS(templateFS, "templates/logged_in.html.tmpl"))
+	authorizeErrorTmpl := template.Must(template.ParseFS(templateFS, "templates/authorize_error.html.tmpl"))
+
+	authorize := &authorizeHandler{
+		clients:      deps.Clients,
+		challenges:   deps.Challenges,
+		issuer:       deps.Issuer,
+		challengeTTL: deps.ChallengeTTL,
+		now:          deps.Now,
+		errorTmpl:    authorizeErrorTmpl,
+		logger:       deps.Logger,
+	}
 
 	login := &loginHandler{
 		auth:         deps.Authenticator,
@@ -113,6 +133,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 		operational.wrap(nil, nil, http.HandlerFunc(healthzHandler)))
 	r.Method(http.MethodGet, "/readyz",
 		operational.wrap(nil, nil, &readinessHandler{checks: deps.ReadinessChecks, logger: deps.Logger}))
+
+	r.Method(http.MethodGet, "/authorize",
+		authorizeGroup.wrap(deps.AuthorizeLimiter, nil, authorize))
 
 	return r
 }
