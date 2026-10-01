@@ -47,6 +47,8 @@ type routerDeps struct {
 	LoginLimiter  *ratelimit.Limiter // REQUIREMENTS §7.2's IP axis for /login
 	Emitter       audit.Emitter      // RF-09; nil emits nothing
 
+	ReadinessChecks []ReadinessCheck // RNF-10's /readyz dependencies
+
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
 	Now                func() time.Time // defaults to time.Now when nil
@@ -60,7 +62,9 @@ type routerDeps struct {
 // than keeping a second, independently-maintained list; chi.Walk is what
 // supplies the set of routes to check it against.
 var routeGroups = map[string]routeGroup{
-	"/login": browserForms,
+	"/login":   browserForms,
+	"/healthz": operational,
+	"/readyz":  operational,
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -99,6 +103,11 @@ func newRouter(deps routerDeps) *chi.Mux {
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(login.get)))
 	r.Method(http.MethodPost, "/login",
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(login.post)))
+
+	r.Method(http.MethodGet, "/healthz",
+		operational.wrap(nil, nil, http.HandlerFunc(healthzHandler)))
+	r.Method(http.MethodGet, "/readyz",
+		operational.wrap(nil, nil, &readinessHandler{checks: deps.ReadinessChecks, logger: deps.Logger}))
 
 	return r
 }
