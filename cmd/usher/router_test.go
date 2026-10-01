@@ -16,6 +16,7 @@ import (
 	"github.com/JonasBorgesLM/moat/ratelimit"
 	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
+	"github.com/JonasBorgesLM/usher/internal/oauth"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
 
@@ -120,6 +121,46 @@ func (f *fakeChallengeStore) Consume(_ context.Context, id string) (session.Chal
 	return c, nil
 }
 
+// fakeCodeStore is a small, controllable stand-in for oauth.CodeStore --
+// its real atomicity is proven elsewhere (internal/store/redis's own
+// integration tests, #29); this package's tests exercise /consent's
+// issuance and /token's consumption of the same value, not the store.
+type fakeCodeStore struct {
+	codes      map[string]oauth.Code
+	tombstones map[string]string
+}
+
+func newFakeCodeStore() *fakeCodeStore {
+	return &fakeCodeStore{codes: map[string]oauth.Code{}, tombstones: map[string]string{}}
+}
+
+func (f *fakeCodeStore) Save(_ context.Context, c oauth.Code) error {
+	if _, exists := f.codes[c.Value]; exists {
+		return oauth.ErrCodeExists
+	}
+	f.codes[c.Value] = c
+	return nil
+}
+
+func (f *fakeCodeStore) Consume(_ context.Context, value string) (oauth.Code, error) {
+	c, ok := f.codes[value]
+	if !ok {
+		return oauth.Code{}, oauth.ErrCodeNotFound
+	}
+	delete(f.codes, value)
+	return c, nil
+}
+
+func (f *fakeCodeStore) Tombstone(_ context.Context, value, familyID string, _ time.Duration) error {
+	f.tombstones[value] = familyID
+	return nil
+}
+
+func (f *fakeCodeStore) TombstonedFamily(_ context.Context, value string) (familyID string, found bool, err error) {
+	familyID, found = f.tombstones[value]
+	return familyID, found, nil
+}
+
 // testDeps builds routerDeps for a real *chi.Mux over fakes -- the fakes
 // are proven-elsewhere business logic over Redis-backed interfaces
 // (internal/session's own tests, #19/#20); what this file tests is the
@@ -150,8 +191,11 @@ func testDeps(t *testing.T) routerDeps {
 		LoginLimiter:       ratelimit.New(1000, 1000), // generous: not what this file's tests exercise
 		AuthorizeLimiter:   ratelimit.New(1000, 1000), // generous: not what this file's tests exercise
 		Consents:           newFakeConsentStore(),
+		Codes:              newFakeCodeStore(),
 		Issuer:             "https://usher.test",
 		ChallengeTTL:       5 * time.Minute,
+		AuthCodeTTL:        time.Minute,
+		AccessTokenTTL:     5 * time.Minute,
 		SessionIdleTTL:     time.Hour,
 		SessionAbsoluteTTL: 24 * time.Hour,
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
