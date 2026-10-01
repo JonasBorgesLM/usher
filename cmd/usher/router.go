@@ -25,6 +25,7 @@ import (
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
 	"github.com/JonasBorgesLM/moat/secureheaders"
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
@@ -44,6 +45,7 @@ type routerDeps struct {
 	Challenges    session.ChallengeStore
 	CSRFProtector *csrf.Protector
 	LoginLimiter  *ratelimit.Limiter // REQUIREMENTS §7.2's IP axis for /login
+	Emitter       audit.Emitter      // RF-09; nil emits nothing
 
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
@@ -77,6 +79,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 		sessions:     deps.Sessions,
 		challenges:   deps.Challenges,
 		protector:    deps.CSRFProtector,
+		emitter:      deps.Emitter,
 		idleTTL:      deps.SessionIdleTTL,
 		absoluteTTL:  deps.SessionAbsoluteTTL,
 		now:          deps.Now,
