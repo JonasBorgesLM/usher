@@ -190,8 +190,8 @@ func TestConsent_AllowGrantsUnionAndCompletes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, postConsent(token, cookie, c.ID, "allow"))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST /consent decision=allow = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusFound {
+		t.Fatalf("POST /consent decision=allow = %d, want %d, body: %s", rec.Code, http.StatusFound, rec.Body.String())
 	}
 	granted, ok, err := deps.Consents.Granted(context.Background(), testSubject, testClientID)
 	if err != nil || !ok {
@@ -199,6 +199,69 @@ func TestConsent_AllowGrantsUnionAndCompletes(t *testing.T) {
 	}
 	if !scopeSubset([]string{"openid", "profile"}, granted) || !scopeSubset(granted, []string{"openid", "profile"}) {
 		t.Errorf("granted scope after allow = %v, want exactly [openid profile]", granted)
+	}
+}
+
+// TestConsent_AllowIssuesCodeAndRedirects is RF-02 Flow 1 steps 10-11
+// (docs/ARCHITECTURE.md §10), #30's own prerequisite: completing consent
+// mints a Code bound to the challenge's own fields, saves it, redirects to
+// redirect_uri carrying it plus the original state and iss, and consumes
+// the challenge so it cannot be replayed to mint a second one.
+//
+// Negative control: with the `h.challenges.Consume` call in
+// completeConsent replaced with a bare `challenge` (never actually
+// consuming it), this test's own second-POST assertion failed -- a second
+// /consent allow for the same login_challenge minted a second, different
+// code instead of hitting "unknown or expired authorization request".
+// Verified by hand, restored before committing.
+func TestConsent_AllowIssuesCodeAndRedirects(t *testing.T) {
+	deps := consentDeps(t, consentTestClient())
+	mux := newRouter(deps)
+	c := seedChallenge(t, deps, "challenge-1", testClientID, []string{"openid"})
+
+	token, cookie, _ := getConsent(t, mux, c.ID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postConsent(token, cookie, c.ID, "allow"))
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("POST /consent decision=allow = %d, want %d, body: %s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Scheme+"://"+loc.Host+loc.Path != testRedirectURI {
+		t.Errorf("redirect target = %q, want %q", loc.Scheme+"://"+loc.Host+loc.Path, testRedirectURI)
+	}
+	if got := loc.Query().Get("state"); got != "xyz123" {
+		t.Errorf("state = %q, want the challenge's original state echoed", got)
+	}
+	if got := loc.Query().Get("iss"); got == "" {
+		t.Error("success redirect carries no iss")
+	}
+	codeValue := loc.Query().Get("code")
+	if codeValue == "" {
+		t.Fatal("success redirect carries no code")
+	}
+
+	fakeCodes, ok := deps.Codes.(*fakeCodeStore)
+	if !ok {
+		t.Fatalf("deps.Codes is a %T, want *fakeCodeStore", deps.Codes)
+	}
+	saved, ok := fakeCodes.codes[codeValue]
+	if !ok {
+		t.Fatal("the code in the redirect was never saved to the CodeStore")
+	}
+	if saved.ClientID != testClientID || saved.RedirectURI != testRedirectURI || saved.Subject != testSubject {
+		t.Errorf("saved code = %+v, want it bound to this challenge's client_id/redirect_uri/subject", saved)
+	}
+
+	// The challenge is single-use (RS-05): a second /consent allow for the
+	// same login_challenge must not mint a second code.
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, postConsent(token, cookie, c.ID, "allow"))
+	if loc2 := rec2.Header().Get("Location"); loc2 != "" {
+		t.Errorf("a replayed /consent allow redirected with a Location carrying a second code: %s", loc2)
 	}
 }
 

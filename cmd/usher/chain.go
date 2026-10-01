@@ -68,6 +68,20 @@ var operational = routeGroup{name: "operational", csrf: false, noStore: false}
 // two-axis one, passed at registration rather than baked into the group.
 var authorizeGroup = routeGroup{name: "authorize", csrf: false, noStore: false}
 
+// tokenGroup is REQUIREMENTS §7.2's "/token, /revoke, /introspect" row, the
+// slice of it /token itself needs: no CSRF (the request carries no
+// cookie-based credential a double-submit model applies to — client
+// authentication is the request's own body/header, checked inside the
+// handler, not a middleware layer), no-store (RS-26 — a token response is
+// exactly RS-26's "credential response"). The table's own "strict, weighted
+// AllowN" rate limit (RF-07/RS-22) is deliberately not wired here: neither
+// id is among #30's cited requirements, and wiring a limiter ahead of its
+// own issue would invent the weighting scheme this group's row only names,
+// not design — passing a nil limiter at registration, the same documented
+// choice the operational group already makes for its own reason, defers it
+// rather than hiding it.
+var tokenGroup = routeGroup{name: "token", csrf: false, noStore: true}
+
 // wrap composes h under g's chain, around limiter's IP axis and protector's
 // CSRF check — ratelimit, then validate.MaxBodyBytes, then csrf if the group
 // carries it, then no-store if the group carries it, innermost to outermost

@@ -2,11 +2,11 @@
 // covers the requested scope, or the client never requires consent (RF-01),
 // skip the form; otherwise render it, with the client id and requested
 // scopes rendered through html/template's default escaping, never
-// template.HTML (RS-36, T-21/T-20). Code issuance (RF-02 step 10 onward) is
-// #29/#30's job — this hands off to a placeholder once consent is
-// satisfied, leaving the challenge unconsumed for them to finish, exactly
-// the same shape login.go's own "nowhere further to go yet" placeholder
-// uses for the no-challenge case.
+// template.HTML (RS-36, T-21/T-20). Once consent is satisfied,
+// completeConsent finishes RF-02 Flow 1 itself (docs/ARCHITECTURE.md §10,
+// steps 10-11): consume the challenge, mint a fresh Code, and redirect to
+// redirect_uri with it — #30's /token handler is this Code's only
+// consumer.
 package main
 
 import (
@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/usher/internal/identity"
@@ -25,11 +26,13 @@ type consentHandler struct {
 	clients    []identity.Client
 	challenges session.ChallengeStore
 	consents   oauth.ConsentStore
+	codes      oauth.CodeStore
 	protector  *csrf.Protector
 	issuer     string
+	codeTTL    time.Duration
+	now        func() time.Time
 
 	consentTmpl *template.Template
-	grantedTmpl *template.Template
 	errorTmpl   *template.Template
 	logger      *slog.Logger
 }
@@ -126,15 +129,43 @@ func (h *consentHandler) post(w http.ResponseWriter, r *http.Request) {
 	h.completeConsent(w, r, challenge)
 }
 
-// completeConsent is the hand-off point RF-02 step 10 (ChallengeStore.Consume,
-// code issuance) continues from in #29/#30. The challenge is deliberately
-// left unconsumed here: consuming it without producing a code would make
-// RS-05's single-use property destroy the one thing the flow still needs.
-func (h *consentHandler) completeConsent(w http.ResponseWriter, r *http.Request, _ session.Challenge) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.grantedTmpl.Execute(w, nil); err != nil {
-		h.logger.ErrorContext(r.Context(), "consent: render granted page", "error", err)
+// completeConsent is RF-02 Flow 1 steps 10-11 (docs/ARCHITECTURE.md §10):
+// ChallengeStore.Consume (single-use, RS-05) for the final Challenge, mint
+// a fresh Code from crypto/rand bound to its client_id, redirect_uri,
+// code_challenge, nonce and scope (RS-04, RS-30), CodeStore.Save it, and
+// redirect to redirect_uri with code, the original state unchanged
+// (RS-03), and iss (RS-29).
+func (h *consentHandler) completeConsent(w http.ResponseWriter, r *http.Request, challenge session.Challenge) {
+	final, err := h.challenges.Consume(r.Context(), challenge.ID)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "consent: consume challenge", "error", err)
+		h.renderError(w, r, "internal error")
+		return
 	}
+
+	value, err := session.NewRawID()
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "consent: generate code", "error", err)
+		h.renderError(w, r, "internal error")
+		return
+	}
+	code := oauth.Code{
+		Value:         value,
+		ClientID:      final.ClientID,
+		RedirectURI:   final.RedirectURI,
+		CodeChallenge: final.CodeChallenge,
+		Nonce:         final.Nonce,
+		Scope:         final.Scope,
+		Subject:       final.Subject,
+		ExpiresAt:     h.now().Add(h.codeTTL),
+	}
+	if err := h.codes.Save(r.Context(), code); err != nil {
+		h.logger.ErrorContext(r.Context(), "consent: save code", "error", err)
+		h.renderError(w, r, "internal error")
+		return
+	}
+
+	redirectWithCode(w, r, h.logger, h.issuer, final.RedirectURI, final.State, code.Value)
 }
 
 func (h *consentHandler) renderConsentForm(w http.ResponseWriter, r *http.Request, c session.Challenge) {

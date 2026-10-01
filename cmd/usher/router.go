@@ -28,11 +28,12 @@ import (
 	"github.com/JonasBorgesLM/moat/secureheaders"
 	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
+	"github.com/JonasBorgesLM/usher/internal/keys"
 	"github.com/JonasBorgesLM/usher/internal/oauth"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
 
-//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl templates/consent_granted.html.tmpl
+//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl
 var templateFS embed.FS
 
 // routerDeps is everything newRouter needs. Each field is an interface or a
@@ -62,6 +63,16 @@ type routerDeps struct {
 	// Consents is /consent's own (#28): RF-13's per-(subject, client) grant.
 	Consents oauth.ConsentStore
 
+	// Codes, Keyset and AccessTokenTTL are shared by /consent's code
+	// issuance (RF-02 Flow 1 steps 10-11) and /token's consumption of it
+	// (RF-02 Flow 2, #30): the same CodeStore on both sides, the signing
+	// keyset /token signs with, and the access token's lifetime (RF-06's
+	// gateway-local revocation bound).
+	Codes          oauth.CodeStore
+	Keyset         *keys.Keyset
+	AuthCodeTTL    time.Duration
+	AccessTokenTTL time.Duration
+
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
 	Now                func() time.Time // defaults to time.Now when nil
@@ -80,6 +91,7 @@ var routeGroups = map[string]routeGroup{
 	"/healthz":   operational,
 	"/readyz":    operational,
 	"/authorize": authorizeGroup,
+	"/token":     tokenGroup,
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -120,18 +132,29 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	consentTmpl := template.Must(template.ParseFS(templateFS, "templates/consent.html.tmpl"))
 	consentErrorTmpl := template.Must(template.ParseFS(templateFS, "templates/consent_error.html.tmpl"))
-	consentGrantedTmpl := template.Must(template.ParseFS(templateFS, "templates/consent_granted.html.tmpl"))
 
 	consent := &consentHandler{
 		clients:     deps.Clients,
 		challenges:  deps.Challenges,
 		consents:    deps.Consents,
+		codes:       deps.Codes,
 		protector:   deps.CSRFProtector,
 		issuer:      deps.Issuer,
+		codeTTL:     deps.AuthCodeTTL,
+		now:         deps.Now,
 		consentTmpl: consentTmpl,
-		grantedTmpl: consentGrantedTmpl,
 		errorTmpl:   consentErrorTmpl,
 		logger:      deps.Logger,
+	}
+
+	token := &tokenHandler{
+		clients:        deps.Clients,
+		codes:          deps.Codes,
+		keyset:         deps.Keyset,
+		issuer:         deps.Issuer,
+		accessTokenTTL: deps.AccessTokenTTL,
+		now:            deps.Now,
+		logger:         deps.Logger,
 	}
 
 	r := chi.NewRouter()
@@ -162,6 +185,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.get)))
 	r.Method(http.MethodPost, "/consent",
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.post)))
+
+	r.Method(http.MethodPost, "/token",
+		tokenGroup.wrap(nil, nil, token))
 
 	return r
 }
