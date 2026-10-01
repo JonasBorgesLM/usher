@@ -13,6 +13,7 @@ import (
 
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
@@ -150,6 +151,18 @@ func testDeps(t *testing.T) routerDeps {
 		SessionAbsoluteTTL: 24 * time.Hour,
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
+}
+
+// testDepsWithSink is testDeps plus an audit.MemorySink wired in as the
+// Emitter, for the tests that assert on what got emitted (RF-09). Kept
+// separate from testDeps so the other tests in this file -- which do not
+// care about audit events -- are not forced to thread a sink through.
+func testDepsWithSink(t *testing.T) (routerDeps, *audit.MemorySink) {
+	t.Helper()
+	deps := testDeps(t)
+	sink := audit.NewMemorySink()
+	deps.Emitter = sink
+	return deps, sink
 }
 
 // walkedRoute is one entry chi.Walk reports against a built *chi.Mux.
@@ -410,5 +423,108 @@ func TestLoginRoute_WrongPasswordRendersGenericError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), genericLoginError) {
 		t.Errorf("response does not contain the generic error message: %s", rec.Body.String())
+	}
+}
+
+// TestLoginRoute_EmitsSuccessEvent is #22's first done-when item, the
+// success half: a correct login emits an EventLoginAttempt/OutcomeSuccess
+// event, asserted via the in-process sink rather than a running crier.
+//
+// Negative control: with the `h.emit(...)` call removed from login.go's
+// success branch, this test failed -- the sink recorded zero events.
+// Verified by hand, restored before committing.
+func TestLoginRoute_EmitsSuccessEvent(t *testing.T) {
+	deps, sink := testDepsWithSink(t)
+	mux := newRouter(deps)
+	token, cookie, _ := getLogin(t, mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postLogin(token, cookie, testIdentifier, testPassword))
+
+	events := sink.Events()
+	if len(events) != 1 {
+		t.Fatalf("sink recorded %d events, want 1: %+v", len(events), events)
+	}
+	if events[0].Type != audit.EventLoginAttempt || events[0].Outcome != audit.OutcomeSuccess {
+		t.Errorf("event = %+v, want {Type: %q, Outcome: %q}", events[0], audit.EventLoginAttempt, audit.OutcomeSuccess)
+	}
+	if events[0].Subject != testIdentifier {
+		t.Errorf("event.Subject = %q, want %q", events[0].Subject, testIdentifier)
+	}
+}
+
+// TestLoginRoute_EmitsFailureEvent is the same done-when item's failure
+// half.
+//
+// Negative control: with the `h.emit(...)` call removed from login.go's
+// ErrLoginFailed branch, this test failed -- the sink recorded zero
+// events. Verified by hand, restored before committing.
+func TestLoginRoute_EmitsFailureEvent(t *testing.T) {
+	deps, sink := testDepsWithSink(t)
+	mux := newRouter(deps)
+	token, cookie, _ := getLogin(t, mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postLogin(token, cookie, testIdentifier, "wrong password"))
+
+	events := sink.Events()
+	if len(events) != 1 {
+		t.Fatalf("sink recorded %d events, want 1: %+v", len(events), events)
+	}
+	if events[0].Type != audit.EventLoginAttempt || events[0].Outcome != audit.OutcomeFailure {
+		t.Errorf("event = %+v, want {Type: %q, Outcome: %q}", events[0], audit.EventLoginAttempt, audit.OutcomeFailure)
+	}
+}
+
+// TestLoginRoute_EmitsRateLimitedEvent is the done-when item's third case:
+// a rejection from the account axis (RS-22, inside identity.Authenticator)
+// emits EventRateLimited, distinct from an ordinary login failure.
+//
+// Negative control: with the `h.emit(...)` call removed from login.go's
+// ErrRateLimited branch, this test failed -- the sink recorded zero
+// events. Verified by hand, restored before committing.
+func TestLoginRoute_EmitsRateLimitedEvent(t *testing.T) {
+	deps, sink := testDepsWithSink(t)
+
+	hasher, err := identity.NewHasher(4, time.Second, weakParams, 1<<30)
+	if err != nil {
+		t.Fatalf("NewHasher: %v", err)
+	}
+	// burst=1, perSecond=0: the bucket never refills, so the second Allow
+	// call -- here, the second login attempt for the same identifier -- is
+	// always denied, deterministically.
+	limiter := ratelimit.New(1, 0)
+	auth, err := identity.NewAuthenticator(newFakeUserStore(t), hasher, weakParams,
+		identity.WithAccountLimiter(limiter))
+	if err != nil {
+		t.Fatalf("NewAuthenticator: %v", err)
+	}
+	deps.Authenticator = auth
+
+	mux := newRouter(deps)
+	token, cookie, _ := getLogin(t, mux)
+
+	// First attempt consumes the account axis's one-request burst --
+	// correct credentials, so it also emits a success event this test
+	// does not care about.
+	mux.ServeHTTP(httptest.NewRecorder(), postLogin(token, cookie, testIdentifier, testPassword))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postLogin(token, cookie, testIdentifier, testPassword))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second attempt = %d, want %d (rate limited)", rec.Code, http.StatusTooManyRequests)
+	}
+
+	var rateLimited []audit.Event
+	for _, e := range sink.Events() {
+		if e.Type == audit.EventRateLimited {
+			rateLimited = append(rateLimited, e)
+		}
+	}
+	if len(rateLimited) != 1 {
+		t.Fatalf("sink recorded %d EventRateLimited events, want 1: %+v", len(rateLimited), sink.Events())
+	}
+	if rateLimited[0].Outcome != audit.OutcomeFailure {
+		t.Errorf("EventRateLimited outcome = %q, want %q", rateLimited[0].Outcome, audit.OutcomeFailure)
 	}
 }

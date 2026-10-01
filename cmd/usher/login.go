@@ -15,6 +15,7 @@ import (
 
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/secureheaders"
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
@@ -34,6 +35,7 @@ type loginHandler struct {
 	sessions   session.SessionStore
 	challenges session.ChallengeStore
 	protector  *csrf.Protector
+	emitter    audit.Emitter // RF-09; nil is valid and simply emits nothing
 
 	idleTTL, absoluteTTL time.Duration
 	now                  func() time.Time
@@ -71,16 +73,19 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 	challenge := r.PostForm.Get("login_challenge")
 	identifier := r.PostForm.Get("identifier")
 	password := r.PostForm.Get("password")
+	canonical := identity.CanonicalizeIdentifier(identifier)
 
 	result, err := h.auth.Attempt(r.Context(), identifier, password)
 	switch {
 	case err == nil:
-		// fall through to the session rotation below
+		h.emit(r, audit.EventLoginAttempt, audit.OutcomeSuccess, canonical)
 	case errors.Is(err, identity.ErrRateLimited):
+		h.emit(r, audit.EventRateLimited, audit.OutcomeFailure, canonical)
 		w.WriteHeader(http.StatusTooManyRequests)
 		h.render(w, r, loginPageData{Challenge: challenge, Error: genericLoginError})
 		return
 	case errors.Is(err, identity.ErrLoginFailed):
+		h.emit(r, audit.EventLoginAttempt, audit.OutcomeFailure, canonical)
 		h.render(w, r, loginPageData{Challenge: challenge, Error: genericLoginError})
 		return
 	default:
@@ -90,6 +95,30 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.completeLogin(w, r, challenge, result.User.ID)
+}
+
+// emit is a no-op when h.emitter is nil, the same optional-dependency
+// pattern identity.Authenticator's own account-axis limiter uses: a caller
+// that has not wired an Emitter yet (most tests) gets no events, not a
+// nil-pointer panic.
+func (h *loginHandler) emit(r *http.Request, t audit.EventType, outcome audit.Outcome, subject string) {
+	if h.emitter == nil {
+		return
+	}
+	h.emitter.Emit(r.Context(), audit.Event{
+		SchemaVersion: 1,
+		Type:          t,
+		Outcome:       outcome,
+		Subject:       subject,
+		// RemoteAddr is the raw socket peer, not realip-resolved — accurate
+		// only when usher is directly exposed. Trusted-proxy-aware sourcing
+		// (REQUIREMENTS §7.3's realip topology) is config.BuildKeyFunc's
+		// concern for rate limiting; audit's SourceAddr does not yet share
+		// it, which is a narrowing worth revisiting once main.go wires a
+		// real topology, not a defect in this event's shape.
+		SourceAddr: r.RemoteAddr,
+		At:         h.now(),
+	})
 }
 
 // completeLogin is RS-12b's dual rotation (session.RotateLogin, #20) plus
