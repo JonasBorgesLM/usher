@@ -226,6 +226,8 @@ func lifetimeValue(cfg Config, lb lifetimeBound) time.Duration {
 		return cfg.SessionIdleTTL
 	case "USHER_SESSION_ABSOLUTE_TTL":
 		return cfg.SessionAbsoluteTTL
+	case "USHER_CONSUMER_JWKS_CACHE_TTL":
+		return cfg.ConsumerJWKSCacheTTL
 	default:
 		panic("lifetimeValue: unhandled lifetimeBound " + lb.env)
 	}

@@ -73,6 +73,13 @@ type routerDeps struct {
 	AuthCodeTTL    time.Duration
 	AccessTokenTTL time.Duration
 
+	// ConsumerJWKSCacheTTL is /.well-known/jwks.json's own Cache-Control
+	// max-age (#33) -- the same duration RS-09's retirement formula was
+	// already built against (keys.Load's own consumerJWKSCacheTTL
+	// parameter), kept here too so the HTTP response's caching promise
+	// and the key-retirement guarantee behind it cannot drift apart.
+	ConsumerJWKSCacheTTL time.Duration
+
 	SessionIdleTTL     time.Duration
 	SessionAbsoluteTTL time.Duration
 	Now                func() time.Time // defaults to time.Now when nil
@@ -86,12 +93,13 @@ type routerDeps struct {
 // than keeping a second, independently-maintained list; chi.Walk is what
 // supplies the set of routes to check it against.
 var routeGroups = map[string]routeGroup{
-	"/login":     browserForms,
-	"/consent":   browserForms,
-	"/healthz":   operational,
-	"/readyz":    operational,
-	"/authorize": authorizeGroup,
-	"/token":     tokenGroup,
+	"/login":                 browserForms,
+	"/consent":               browserForms,
+	"/healthz":               operational,
+	"/readyz":                operational,
+	"/authorize":             authorizeGroup,
+	"/token":                 tokenGroup,
+	"/.well-known/jwks.json": jwksGroup,
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -157,6 +165,13 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:         deps.Logger,
 	}
 
+	jwks := &jwksHandler{
+		keyset:           deps.Keyset,
+		consumerCacheTTL: deps.ConsumerJWKSCacheTTL,
+		now:              deps.Now,
+		logger:           deps.Logger,
+	}
+
 	r := chi.NewRouter()
 	// RequestID first, so every layer after it — including a handler's own
 	// error logging — can correlate by it (RNF-10; see log.go's
@@ -188,6 +203,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodPost, "/token",
 		tokenGroup.wrap(nil, nil, token))
+
+	r.Method(http.MethodGet, "/.well-known/jwks.json",
+		jwksGroup.wrap(nil, nil, jwks))
 
 	return r
 }
