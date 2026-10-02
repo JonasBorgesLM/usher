@@ -59,6 +59,49 @@ func TestCrierEmitter_DeliversOverHTTP(t *testing.T) {
 	}
 }
 
+// TestCrierEmitter_RefreshReuseIsErrorSeverity is #36's own finding: a
+// generic failure (testEvent's own EventLoginAttempt/OutcomeFailure)
+// reaches crier as WARN, but RS-11's reuse-detected event must reach it
+// as ERROR -- crier's own "never samples at or above ERROR" guarantee
+// (ADR-0017) does not apply to a merely-WARN severity, and reuse
+// detection is exactly the kind of event that guarantee exists for.
+//
+// Negative control: with severityFor reverted to switching on e.Outcome
+// alone (WARN for any failure, regardless of Type), this test failed --
+// the reuse event's severityNumber was 13 ("WARN"), not 17 ("ERROR").
+// Verified by hand, restored before committing.
+func TestCrierEmitter_RefreshReuseIsErrorSeverity(t *testing.T) {
+	received := make(chan []byte, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		received <- body
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	emitter := NewCrierEmitter(srv.Client(), srv.URL, "usher", secret.New([]byte("ingest-token")), 10, nil)
+	defer emitter.Close()
+
+	emitter.Emit(context.Background(), Event{
+		SchemaVersion: 1,
+		Type:          EventRefreshReuse,
+		Outcome:       OutcomeFailure,
+		At:            time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	})
+
+	select {
+	case body := <-received:
+		if !strings.Contains(string(body), `"severityNumber":17`) {
+			t.Errorf("payload does not carry severityNumber 17 (ERROR): %s", body)
+		}
+		if !strings.Contains(string(body), `"severityText":"ERROR"`) {
+			t.Errorf("payload does not carry severityText ERROR: %s", body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the event to reach crier")
+	}
+}
+
 // TestCrierEmitter_UnreachableDropsAndCounts is ADR-0017's Amendment: when
 // crier cannot be reached, the event is dropped and the reason counted —
 // not retried, not blocking.

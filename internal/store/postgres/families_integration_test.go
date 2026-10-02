@@ -8,9 +8,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/oauth"
 )
 
@@ -183,4 +186,247 @@ func TestFamilyStore_DBDumpYieldsNoUsableToken(t *testing.T) {
 	if len(dbHash) != 32 {
 		t.Errorf("stored hash is %d bytes, want 32 (SHA-256's width, RS-10)", len(dbHash))
 	}
+}
+
+// seedFamilyWithToken is #36's own fixture: a family and its one token,
+// returning the family's real (database-generated) id alongside the
+// token's hash -- every #36 test needs the real id to build a correctly
+// bound successor RefreshToken.
+func seedFamilyWithToken(t *testing.T, store *FamilyStore, userID string) (familyID string, hash [32]byte) {
+	t.Helper()
+	ctx := context.Background()
+	_, hash = testRawToken(t)
+	fam := testFamily(userID, time.Now().Add(time.Hour))
+	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(time.Hour)}
+	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+		t.Fatalf("CreateFamily: %v", err)
+	}
+	gotFam, _, err := store.Lookup(ctx, hash)
+	if err != nil {
+		t.Fatalf("Lookup (resolve family id): %v", err)
+	}
+	return gotFam.ID, hash
+}
+
+func TestFamilyStore_Rotate_LegitimateExchangeSucceeds(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	familyID, hash := seedFamilyWithToken(t, store, userID)
+	_, nextHash := testRawToken(t)
+
+	consumed, err := store.Rotate(ctx, hash, oauth.RefreshToken{Hash: nextHash, FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if !consumed {
+		t.Fatal("Rotate on a fresh, unconsumed token reported consumed=false")
+	}
+
+	// The successor must itself now be a usable, unconsumed token.
+	_, nextTok, err := store.Lookup(ctx, nextHash)
+	if err != nil {
+		t.Fatalf("Lookup(successor): %v", err)
+	}
+	if nextTok.ConsumedAt != nil {
+		t.Error("the successor token is already consumed")
+	}
+
+	// Replaying the original (now-consumed) token must report reuse.
+	_, anotherHash := testRawToken(t)
+	consumed, err = store.Rotate(ctx, hash, oauth.RefreshToken{Hash: anotherHash, FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("Rotate (replay): %v", err)
+	}
+	if consumed {
+		t.Error("replaying an already-consumed token reported consumed=true")
+	}
+}
+
+// TestFamilyStore_Rotate_SuccessorUnusableAfterFamilyRevoked is #36's own
+// finding: a family revoked for reuse (on one token) must also refuse
+// its never-consumed successor -- otherwise a detected reuse would stop
+// nothing. Exercises Rotate's own `f.revoked_at IS NULL` condition
+// directly, independent of whatever earlier check (RS-34's binding,
+// #37) might also have caught this upstream.
+//
+// Negative control: with the `AND f.revoked_at IS NULL` clause removed
+// from Rotate's UPDATE (reverting to docs/ARCHITECTURE.md §2.2's
+// original "verbatim" query), this test failed -- the successor token
+// rotated successfully despite its family being revoked. Verified by
+// hand, restored before committing.
+func TestFamilyStore_Rotate_SuccessorUnusableAfterFamilyRevoked(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	familyID, hashA := seedFamilyWithToken(t, store, userID)
+
+	// Legitimate rotation: A -> B.
+	_, hashB := testRawToken(t)
+	consumed, err := store.Rotate(ctx, hashA, oauth.RefreshToken{Hash: hashB, FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil || !consumed {
+		t.Fatalf("first rotation: consumed=%v err=%v", consumed, err)
+	}
+
+	// Replay A: reuse. The family is revoked exactly as
+	// oauth.RotateRefreshToken would (tested there against a fake); this
+	// test drives the store directly to isolate Rotate's own SQL.
+	_, hashC := testRawToken(t)
+	consumed, err = store.Rotate(ctx, hashA, oauth.RefreshToken{Hash: hashC, FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("replay rotation: %v", err)
+	}
+	if consumed {
+		t.Fatal("replaying an already-consumed token succeeded")
+	}
+	if err := store.Revoke(ctx, familyID, "reuse_detected"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	// The successor B was never consumed -- its own row alone would
+	// still satisfy a naive compare-and-set. It must still be refused,
+	// because its family is now revoked.
+	_, hashD := testRawToken(t)
+	consumed, err = store.Rotate(ctx, hashB, oauth.RefreshToken{Hash: hashD, FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("successor rotation: %v", err)
+	}
+	if consumed {
+		t.Error("the successor token rotated successfully even though its family was revoked")
+	}
+}
+
+// TestRotateRefreshToken_ConcurrentReuse_ExactlyOneIssuanceFamilyRevoked
+// is #36's own first three done-when items, all from the same race: 50
+// goroutines simultaneously present the SAME unconsumed token. Exactly
+// one must succeed; the rest are reuse by ADR-0012's own definition (no
+// grace window -- a race loser is not distinguished from a genuine
+// replay), which must revoke the family and emit a high-severity audit
+// event. Run against the real FamilyStore (never a fake) because RS-11's
+// claim is about real Postgres's own atomicity, under -race.
+func TestRotateRefreshToken_ConcurrentReuse_ExactlyOneIssuanceFamilyRevoked(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	familyID, hash := seedFamilyWithToken(t, store, userID)
+
+	const n = 50
+	nextHashes := make([][32]byte, n)
+	for i := range n {
+		_, nextHashes[i] = testRawToken(t)
+	}
+
+	sink := audit.NewMemorySink()
+	var successes atomic.Int32
+	var invalidGrants atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			err := oauth.RotateRefreshToken(context.Background(), store, sink, hash,
+				oauth.RefreshToken{Hash: nextHashes[i], FamilyID: familyID, ExpiresAt: time.Now().Add(time.Hour)})
+			switch {
+			case err == nil:
+				successes.Add(1)
+			case errors.Is(err, oauth.ErrInvalidGrant):
+				invalidGrants.Add(1)
+			default:
+				t.Errorf("RotateRefreshToken: unexpected error: %v", err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Errorf("successful rotations = %d, want exactly 1", got)
+	}
+	if got := invalidGrants.Load(); got != n-1 {
+		t.Errorf("invalid_grant outcomes = %d, want %d", got, n-1)
+	}
+
+	var revokedAt *time.Time
+	var revokedReason *string
+	if err := store.pool.QueryRow(context.Background(),
+		"SELECT revoked_at, revoked_reason FROM refresh_families WHERE id = $1", familyID,
+	).Scan(&revokedAt, &revokedReason); err != nil {
+		t.Fatalf("read refresh_families row: %v", err)
+	}
+	if revokedAt == nil || revokedReason == nil || *revokedReason != "reuse_detected" {
+		t.Errorf("family revoked_at=%v revoked_reason=%v, want revoked with reason reuse_detected", revokedAt, revokedReason)
+	}
+
+	var highSeverity []audit.Event
+	for _, e := range sink.Events() {
+		if e.Type == audit.EventRefreshReuse {
+			highSeverity = append(highSeverity, e)
+		}
+	}
+	if len(highSeverity) == 0 {
+		t.Error("no EventRefreshReuse event was emitted")
+	}
+	for _, e := range highSeverity {
+		if e.Outcome != audit.OutcomeFailure {
+			t.Errorf("EventRefreshReuse outcome = %q, want %q", e.Outcome, audit.OutcomeFailure)
+		}
+	}
+}
+
+// TestFamilyStore_Rotate_NegativeControl_ReadThenWriteLetsMultipleWin is
+// #36's own fourth done-when: "verified failing against a read-then-write
+// consumption." Rather than editing the real Rotate and reverting (which
+// would leave the production file momentarily broken for a window), this
+// runs the identical concurrency race against a deliberately non-atomic
+// SELECT-then-UPDATE implementation defined only in this test file --
+// the same approach #29's own CodeStore negative control used for
+// authorization codes.
+//
+// The race must be forced with an explicit barrier: an earlier attempt
+// without one (this project's own established lesson, #29) did not
+// reproduce the race reliably under a fast local Postgres round trip.
+func TestFamilyStore_Rotate_NegativeControl_ReadThenWriteLetsMultipleWin(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	_, hash := seedFamilyWithToken(t, store, userID)
+	ctx := context.Background()
+
+	const n = 50
+	var barrier sync.WaitGroup
+	barrier.Add(n)
+
+	brokenRotate := func() (bool, error) {
+		var consumedAt *time.Time
+		if err := store.pool.QueryRow(ctx, "SELECT consumed_at FROM refresh_tokens WHERE hash = $1", hash[:]).Scan(&consumedAt); err != nil {
+			barrier.Done()
+			return false, err
+		}
+		barrier.Done()
+		barrier.Wait() // every goroutine's read completes before any write
+		if consumedAt != nil {
+			return false, nil
+		}
+		if _, err := store.pool.Exec(ctx, "UPDATE refresh_tokens SET consumed_at = now() WHERE hash = $1", hash[:]); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for range n {
+		go func() {
+			defer wg.Done()
+			ok, err := brokenRotate()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if ok {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	got := wins.Load()
+	if got <= 1 {
+		t.Fatalf("read-then-write negative control: %d of %d callers won, want more than 1 (the forced race did not reproduce)", got, n)
+	}
+	t.Logf("read-then-write negative control: %d of %d concurrent callers incorrectly succeeded", got, n)
 }

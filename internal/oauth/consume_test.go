@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -50,33 +51,68 @@ func (f *fakeCodeStore) TombstonedFamily(_ context.Context, value string) (famil
 	return familyID, found, nil
 }
 
+// fakeFamilyStore's tokens map is Rotate's own tiny model of
+// refresh_tokens: a hash exists once seeded (seedToken, or by a prior
+// Rotate's own insert of next) and maps to whether it has been consumed
+// — the same shape FamilyStore.Rotate's real compare-and-set checks
+// against a real table, used here by both ConsumeCode's tests (which
+// never touch it) and RotateRefreshToken's own (#36).
 type fakeFamilyStore struct {
+	mu      sync.Mutex
 	revoked map[string]string // familyID -> reason
+	tokens  map[[32]byte]bool // hash -> consumed
 }
 
 func newFakeFamilyStore() *fakeFamilyStore {
-	return &fakeFamilyStore{revoked: map[string]string{}}
+	return &fakeFamilyStore{revoked: map[string]string{}, tokens: map[[32]byte]bool{}}
+}
+
+// seedToken records hash as already existing, consumed or not —
+// RotateRefreshToken's own tests use this in place of CreateFamily,
+// which this fake does not implement.
+func (f *fakeFamilyStore) seedToken(hash [32]byte, consumed bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokens[hash] = consumed
 }
 
 func (f *fakeFamilyStore) CreateFamily(context.Context, Family, RefreshToken) error {
-	panic("not used by ConsumeCode")
+	panic("not used by ConsumeCode or RotateRefreshToken")
 }
 
-func (f *fakeFamilyStore) Rotate(context.Context, [32]byte, RefreshToken) (bool, error) {
-	panic("not used by ConsumeCode")
+// Rotate mirrors the real store's own compare-and-set: a hash that does
+// not exist, or already consumed, is reuse (false, nil); otherwise it is
+// marked consumed and next is recorded unconsumed, in the same call —
+// this fake has no concurrent callers of its own to race, so a mutex is
+// enough to make it a correct, if not atomic-under-contention, stand-in.
+func (f *fakeFamilyStore) Rotate(_ context.Context, hash [32]byte, next RefreshToken) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	consumed, exists := f.tokens[hash]
+	if !exists || consumed {
+		return false, nil
+	}
+	f.tokens[hash] = true
+	f.tokens[next.Hash] = false
+	return true, nil
 }
 
 func (f *fakeFamilyStore) Revoke(_ context.Context, familyID, reason string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, already := f.revoked[familyID]; already {
+		return nil // idempotent, matching the real store's own contract
+	}
 	f.revoked[familyID] = reason
 	return nil
 }
 
 func (f *fakeFamilyStore) RevokeAllForSubject(context.Context, string, string) error {
-	panic("not used by ConsumeCode")
+	panic("not used by ConsumeCode or RotateRefreshToken")
 }
 
 func (f *fakeFamilyStore) Lookup(context.Context, [32]byte) (Family, RefreshToken, error) {
-	panic("not used by ConsumeCode")
+	panic("not used by ConsumeCode or RotateRefreshToken")
 }
 
 const (

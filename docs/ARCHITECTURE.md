@@ -177,19 +177,35 @@ holds `users`, `refresh_families`, `refresh_tokens` and `consent` — never a
 database row. `refresh_tokens.hash` is `BYTEA CHECK (octet_length(hash) = 32)`:
 structurally the width of a SHA-256 digest and nothing else, so there is no
 column shape a raw token could be written to by mistake (RS-10). `Rotate`'s
-one conditional UPDATE is, verbatim:
+one conditional UPDATE, as implemented (#36):
 
 ```sql
-UPDATE refresh_tokens SET consumed_at = now()
-WHERE hash = $1 AND consumed_at IS NULL;
+UPDATE refresh_tokens t SET consumed_at = now()
+FROM refresh_families f
+WHERE t.hash = $1 AND t.consumed_at IS NULL AND f.id = t.family_id AND f.revoked_at IS NULL;
 ```
 
-`RowsAffected() == 1` is `consumed == true`; `== 0` is reuse. Verified against
-a real Postgres 16 under concurrency
-(`TestRefreshTokenConsumption_AtomicUnderConcurrency`): fifty goroutines racing
-this UPDATE on one row, exactly one reports success. The negative control —
-the SELECT-then-UPDATE shape this requirement forbids, run once to confirm the
-test catches it — let 44 to 50 of 50 "win."
+This is one condition wider than the query this section originally described
+(`WHERE hash = $1 AND consumed_at IS NULL` alone, with no join). #36's own
+negative control found why: a family revoked for reusing one token still let
+that token's own never-consumed successor rotate normally afterward, since
+the successor's row had its own `consumed_at IS NULL` and nothing else
+checked the family at all. Folding `f.revoked_at IS NULL` into the same
+statement closes that without opening a second read-then-write window next
+to the one RS-11 already forbids.
+
+`RowsAffected() == 1` is `consumed == true`; `== 0` is reuse (including a
+revoked family, now). Verified against a real Postgres 16 under concurrency:
+`TestRefreshTokenConsumption_AtomicUnderConcurrency`
+(`internal/store/postgres/migrate_integration_test.go`) pins the bare
+UPDATE's own atomicity ahead of `FamilyStore.Rotate`'s existence — fifty
+goroutines racing it on one row, exactly one reports success, and the
+SELECT-then-UPDATE negative control let 44 to 50 of 50 "win." #36's own
+`TestRotateRefreshToken_ConcurrentReuse_ExactlyOneIssuanceFamilyRevoked`
+(`internal/store/postgres/families_integration_test.go`) repeats this
+through the real `Rotate` and the `RotateRefreshToken` orchestration
+(`internal/oauth/rotate.go`), additionally asserting the family ends up
+revoked and a high-severity audit event was emitted.
 
 ### 2.3 Consent (RF-13)
 
