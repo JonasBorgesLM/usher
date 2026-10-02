@@ -165,9 +165,16 @@ type FamilyStore interface {
 	// Revoke sets RevokedAt/RevokedReason idempotently.
 	Revoke(ctx context.Context, familyID, reason string) error
 
-	// RevokeAllForSubject is administrative revocation (RF-06) and, scoped
-	// by the caller to one client's families, consent revocation (RF-13).
+	// RevokeAllForSubject is administrative revocation (RF-06): every
+	// family subject holds, across every client, revoked with reason.
 	RevokeAllForSubject(ctx context.Context, subject, reason string) error
+
+	// RevokeForSubjectAndClient is consent revocation (RF-13): only the
+	// families subject holds under clientID (#38: this used to be
+	// described as a mode of RevokeAllForSubject -- its first real
+	// caller needed its own method instead, the same "the first real
+	// caller decides" reasoning #37 already applied to CreateFamily).
+	RevokeForSubjectAndClient(ctx context.Context, subject, clientID, reason string) error
 
 	// Lookup finds the family and token owning hash, for RS-34's binding
 	// checks before Rotate is attempted.
@@ -580,8 +587,11 @@ if this `Emitter` cannot.
 package proxy
 
 // Denylist is the gateway-local revocation check (RF-06, ADR-0014). Its
-// only consumer is this package; the demo resource server never sees it
-// (RS-18) because cmd/resource-server does not import internal/ at all.
+// only consumer at the type level is this package; the demo resource
+// server never sees it (RS-18) because cmd/resource-server does not
+// import internal/ at all. Implemented in internal/store/redis (#38),
+// with two callers: /revoke (cmd/usher) writes it; the gateway's own
+// NewHandler, below, reads it once M6 implements it.
 type Denylist interface {
 	// Contains reports whether jti is revoked. A non-nil error must be
 	// treated as revoked by the caller (RNF-04: infrastructure failure
@@ -705,7 +715,44 @@ config error into an open redirect (RS-28), and it compiles either way.
 
 ---
 
-## 13. What this surfaced
+## 13. Flow 4 — `POST /revoke` (RFC 7009, RF-06, RF-13, ADR-0014)
+
+1. Authenticate the client if confidential (RS-16) — shared with Flow 2/3
+   through the same `authenticateClient` function.
+2. `tokenvalidator.ValidateForRevocation(token)` — the same signature
+   verification and claim set `ValidateAccessToken` (Flow 1-3's own
+   gateway-side check) requires, minus the audience claim: `/revoke`'s
+   caller is the client the token was issued to, not a resource server
+   enforcing RS-19 for one particular audience.
+3. **Verifies as an access token:** `Claims.ClientID` must equal the
+   authenticated client (RFC 7009 §2.1) — otherwise respond success
+   without revoking anything (step 6). Otherwise, `ttl =
+   Claims.ExpiresAt - now`; if `ttl > 0`, `Denylist.Add(Claims.JTI, ttl)`
+   (ADR-0014: the gateway-local write side) and emit `EventRevocation`.
+4. **Fails verification** (bad signature, wrong `typ`, expired, or not a
+   JWS at all — a refresh token is an opaque string, never JWS-shaped):
+   treat `token` as a refresh token instead. `hash =
+   SHA-256(token)`; `FamilyStore.Lookup(hash)`. Not found → success
+   (step 6); found → `Family.ClientID` must equal the authenticated
+   client (RFC 7009 §2.1), otherwise success without revoking anything.
+5. Otherwise `FamilyStore.Revoke(familyID, "revoked_by_client")` (#36's
+   same idempotent UPDATE RS-11's reuse path already uses) and, if the
+   family was not already revoked, emit `EventRevocation`.
+6. Respond `200`, empty body, `Cache-Control: no-store` — always, RFC
+   7009 §2.2's own ambiguity: a client probing values at this endpoint
+   learns nothing from the response shape about whether a value ever
+   corresponded to a real token.
+
+**Scope of the guarantee, stated rather than implied:** revoking an
+access token here only ever reaches the gateway's own denylist read
+(ADR-0014) — not yet implemented (M6). A resource server validating
+independently (RS-18) keeps accepting a revoked access token until its
+own `exp`. RF-06's own wording already says this; this flow does not
+claim anything stronger.
+
+---
+
+## 14. What this surfaced
 
 Per the method's own claim (`foundation/method/00-before-code.md`): writing
 signatures before bodies is supposed to find design problems while they are

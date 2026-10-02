@@ -15,10 +15,9 @@ import (
 // FamilyStore implements oauth.FamilyStore over refresh_families and
 // refresh_tokens (migrations/0001_initial_schema.sql). CreateFamily,
 // Lookup (#35: issuance and hashed storage), Rotate and Revoke (#36:
-// atomic reuse detection) are implemented here; RevokeAllForSubject
-// panics rather than silently succeeding, the same convention
-// pkg/tokenvalidator's own not-yet-implemented methods use — its real
-// body, administrative and consent revocation, is #38's own scope.
+// atomic reuse detection) were implemented first; RevokeAllForSubject and
+// RevokeForSubjectAndClient (administrative and consent revocation) are
+// #38's own scope.
 type FamilyStore struct {
 	pool *pgxpool.Pool
 }
@@ -181,7 +180,38 @@ func (s *FamilyStore) Revoke(ctx context.Context, familyID, reason string) error
 	return nil
 }
 
-// RevokeAllForSubject implements oauth.FamilyStore. Implemented in #38.
+// RevokeAllForSubject implements oauth.FamilyStore: administrative
+// revocation (RF-06), every family subject holds across every client.
+// Idempotent the same way Revoke's own doc comment explains — an
+// already-revoked family (by reuse detection, by a prior run of this
+// same action, or by consent revocation) keeps its first-recorded reason
+// rather than this UPDATE overwriting it.
 func (s *FamilyStore) RevokeAllForSubject(ctx context.Context, subject, reason string) error {
-	panic("postgres: FamilyStore.RevokeAllForSubject not implemented (#38)")
+	_, err := s.pool.Exec(ctx,
+		`UPDATE refresh_families SET revoked_at = now(), revoked_reason = $1
+		 WHERE subject = $2 AND revoked_at IS NULL`,
+		reason, subject,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke all families for subject: %w", err)
+	}
+	return nil
+}
+
+// RevokeForSubjectAndClient implements oauth.FamilyStore: consent
+// revocation (RF-13), scoped to the one client whose consent was
+// revoked. Unlike RevokeAllForSubject's administrative case, this must
+// never touch subject's families under any other client, so client_id is
+// folded into the same WHERE as subject and the idempotency guard —
+// one UPDATE, not a read to decide scope followed by a write.
+func (s *FamilyStore) RevokeForSubjectAndClient(ctx context.Context, subject, clientID, reason string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE refresh_families SET revoked_at = now(), revoked_reason = $1
+		 WHERE subject = $2 AND client_id = $3 AND revoked_at IS NULL`,
+		reason, subject, clientID,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke families for subject and client: %w", err)
+	}
+	return nil
 }

@@ -50,12 +50,35 @@ func testRawToken(t *testing.T) (raw string, hash [32]byte) {
 }
 
 func testFamily(subject string, expiresAt time.Time) oauth.Family {
+	return testFamilyForClient(subject, "client-1", expiresAt)
+}
+
+// testFamilyForClient is testFamily's own generalization, for #38's own
+// tests: RevokeAllForSubject and RevokeForSubjectAndClient are only
+// distinguishable from each other against a subject who holds families
+// under more than one client.
+func testFamilyForClient(subject, clientID string, expiresAt time.Time) oauth.Family {
 	return oauth.Family{
-		ClientID:  "client-1",
+		ClientID:  clientID,
 		Subject:   subject,
 		Scope:     []string{"openid", "offline_access"},
 		ExpiresAt: expiresAt,
 	}
+}
+
+// createTestUser is newTestFamilyFixture's own per-test variant, for
+// tests that need a second, distinct subject against the same store.
+func createTestUser(t *testing.T, store *FamilyStore, identifier string) string {
+	t.Helper()
+	userID, err := NewUserStore(store.pool).CreateUser(context.Background(), SeedUser{
+		Identifier:   identifier,
+		PasswordHash: testPasswordHash,
+		Role:         "user",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(%q): %v", identifier, err)
+	}
+	return userID
 }
 
 func TestFamilyStore_CreateAndLookup_RoundTrip(t *testing.T) {
@@ -426,4 +449,167 @@ func TestFamilyStore_Rotate_NegativeControl_ReadThenWriteLetsMultipleWin(t *test
 		t.Fatalf("read-then-write negative control: %d of %d callers won, want more than 1 (the forced race did not reproduce)", got, n)
 	}
 	t.Logf("read-then-write negative control: %d of %d concurrent callers incorrectly succeeded", got, n)
+}
+
+// TestFamilyStore_RevokeAllForSubject_RevokesEveryFamilyAcrossClients is
+// #38's own done-when for administrative revocation (RF-06): every
+// family subject holds, regardless of which client it was issued to, is
+// revoked -- unlike RevokeForSubjectAndClient, this must NOT stop at one
+// client. The negative space this guards against (another subject left
+// untouched; an earlier revocation reason not clobbered) has its own
+// dedicated tests below, each with its own verified negative control.
+func TestFamilyStore_RevokeAllForSubject_RevokesEveryFamilyAcrossClients(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	_, hashA := testRawToken(t)
+	_, hashB := testRawToken(t)
+
+	famA := testFamilyForClient(userID, "client-a", time.Now().Add(time.Hour))
+	idA, err := store.CreateFamily(ctx, famA, oauth.RefreshToken{Hash: hashA, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateFamily(client-a): %v", err)
+	}
+	famB := testFamilyForClient(userID, "client-b", time.Now().Add(time.Hour))
+	idB, err := store.CreateFamily(ctx, famB, oauth.RefreshToken{Hash: hashB, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateFamily(client-b): %v", err)
+	}
+
+	if err := store.RevokeAllForSubject(ctx, userID, "admin"); err != nil {
+		t.Fatalf("RevokeAllForSubject: %v", err)
+	}
+
+	for _, id := range []string{idA, idB} {
+		var revokedAt *time.Time
+		var revokedReason *string
+		if err := store.pool.QueryRow(ctx,
+			"SELECT revoked_at, revoked_reason FROM refresh_families WHERE id = $1", id,
+		).Scan(&revokedAt, &revokedReason); err != nil {
+			t.Fatalf("read refresh_families(%s): %v", id, err)
+		}
+		if revokedAt == nil || revokedReason == nil || *revokedReason != "admin" {
+			t.Errorf("family %s revoked_at=%v revoked_reason=%v, want revoked with reason admin", id, revokedAt, revokedReason)
+		}
+	}
+}
+
+// TestFamilyStore_RevokeAllForSubject_DoesNotTouchAnotherSubject is the
+// administrative case's own boundary in the other direction: a different
+// subject's family, even under the same client, must be untouched.
+//
+// Negative control: with `subject = $2` removed from
+// RevokeAllForSubject's WHERE clause, this test failed -- the other
+// subject's family was revoked too. Verified by hand, restored before
+// committing.
+func TestFamilyStore_RevokeAllForSubject_DoesNotTouchAnotherSubject(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	otherUserID := createTestUser(t, store, "family-test-other@example.com")
+
+	_, hashMine := testRawToken(t)
+	mine := testFamily(userID, time.Now().Add(time.Hour))
+	if _, err := store.CreateFamily(ctx, mine, oauth.RefreshToken{Hash: hashMine, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateFamily(mine): %v", err)
+	}
+
+	_, hashOther := testRawToken(t)
+	other := testFamily(otherUserID, time.Now().Add(time.Hour))
+	idOther, err := store.CreateFamily(ctx, other, oauth.RefreshToken{Hash: hashOther, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateFamily(other): %v", err)
+	}
+
+	if err := store.RevokeAllForSubject(ctx, userID, "admin"); err != nil {
+		t.Fatalf("RevokeAllForSubject: %v", err)
+	}
+
+	var revokedAt *time.Time
+	if err := store.pool.QueryRow(ctx,
+		"SELECT revoked_at FROM refresh_families WHERE id = $1", idOther,
+	).Scan(&revokedAt); err != nil {
+		t.Fatalf("read refresh_families(other): %v", err)
+	}
+	if revokedAt != nil {
+		t.Error("another subject's family was revoked by RevokeAllForSubject")
+	}
+}
+
+// TestFamilyStore_RevokeForSubjectAndClient_ScopedToOneClient is #38's
+// own done-when for consent revocation (RF-13): only the families the
+// subject holds under the one revoked client are touched -- the same
+// subject's family under a different client must survive.
+//
+// Negative control: with `AND client_id = $3` removed from
+// RevokeForSubjectAndClient's WHERE clause, this test failed -- the same
+// subject's family under client-b was revoked too, even though only
+// client-a's consent was revoked. Verified by hand, restored before
+// committing.
+func TestFamilyStore_RevokeForSubjectAndClient_ScopedToOneClient(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	_, hashA := testRawToken(t)
+	_, hashB := testRawToken(t)
+
+	famA := testFamilyForClient(userID, "client-a", time.Now().Add(time.Hour))
+	idA, err := store.CreateFamily(ctx, famA, oauth.RefreshToken{Hash: hashA, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateFamily(client-a): %v", err)
+	}
+	famB := testFamilyForClient(userID, "client-b", time.Now().Add(time.Hour))
+	idB, err := store.CreateFamily(ctx, famB, oauth.RefreshToken{Hash: hashB, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("CreateFamily(client-b): %v", err)
+	}
+
+	if err := store.RevokeForSubjectAndClient(ctx, userID, "client-a", "consent_revoked"); err != nil {
+		t.Fatalf("RevokeForSubjectAndClient: %v", err)
+	}
+
+	var revokedAtA, revokedAtB *time.Time
+	var revokedReasonA *string
+	if err := store.pool.QueryRow(ctx, "SELECT revoked_at, revoked_reason FROM refresh_families WHERE id = $1", idA).
+		Scan(&revokedAtA, &revokedReasonA); err != nil {
+		t.Fatalf("read refresh_families(client-a): %v", err)
+	}
+	if revokedAtA == nil || revokedReasonA == nil || *revokedReasonA != "consent_revoked" {
+		t.Errorf("client-a family revoked_at=%v revoked_reason=%v, want revoked with reason consent_revoked", revokedAtA, revokedReasonA)
+	}
+
+	if err := store.pool.QueryRow(ctx, "SELECT revoked_at FROM refresh_families WHERE id = $1", idB).Scan(&revokedAtB); err != nil {
+		t.Fatalf("read refresh_families(client-b): %v", err)
+	}
+	if revokedAtB != nil {
+		t.Error("client-b's family was revoked by a RevokeForSubjectAndClient call scoped to client-a")
+	}
+}
+
+// TestFamilyStore_RevokeAllForSubject_DoesNotOverwriteEarlierReason is
+// Revoke's own idempotency contract, extended to the two revoke-many
+// methods: a family already revoked (here, by reuse detection) keeps its
+// first-recorded reason rather than a later administrative sweep
+// clobbering the record of what actually happened first (ADR-0017).
+//
+// Negative control: with `AND revoked_at IS NULL` removed from
+// RevokeAllForSubject's UPDATE, this test failed -- the family's reason
+// was overwritten from reuse_detected to admin. Verified by hand,
+// restored before committing.
+func TestFamilyStore_RevokeAllForSubject_DoesNotOverwriteEarlierReason(t *testing.T) {
+	store, userID := newTestFamilyFixture(t)
+	ctx := context.Background()
+	familyID, _ := seedFamilyWithToken(t, store, userID)
+
+	if err := store.Revoke(ctx, familyID, "reuse_detected"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	if err := store.RevokeAllForSubject(ctx, userID, "admin"); err != nil {
+		t.Fatalf("RevokeAllForSubject: %v", err)
+	}
+
+	var revokedReason *string
+	if err := store.pool.QueryRow(ctx, "SELECT revoked_reason FROM refresh_families WHERE id = $1", familyID).Scan(&revokedReason); err != nil {
+		t.Fatalf("read refresh_families: %v", err)
+	}
+	if revokedReason == nil || *revokedReason != "reuse_detected" {
+		t.Errorf("revoked_reason = %v, want it to keep its first-recorded value reuse_detected", revokedReason)
+	}
 }

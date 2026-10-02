@@ -30,7 +30,9 @@ import (
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/keys"
 	"github.com/JonasBorgesLM/usher/internal/oauth"
+	"github.com/JonasBorgesLM/usher/internal/proxy"
 	"github.com/JonasBorgesLM/usher/internal/session"
+	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
 
 //go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl
@@ -83,6 +85,12 @@ type routerDeps struct {
 	RefreshIdleTTL     time.Duration
 	RefreshAbsoluteTTL time.Duration
 
+	// Denylist is /revoke's own write side (#38, ADR-0014): the gateway's
+	// own read side (proxy.NewHandler) is M6, but the store it reads from
+	// is the same one /revoke writes to, so it is constructed here, not
+	// deferred alongside the gateway itself.
+	Denylist proxy.Denylist
+
 	// ConsumerJWKSCacheTTL is /.well-known/jwks.json's own Cache-Control
 	// max-age (#33) -- the same duration RS-09's retirement formula was
 	// already built against (keys.Load's own consumerJWKSCacheTTL
@@ -109,6 +117,7 @@ var routeGroups = map[string]routeGroup{
 	"/readyz":                operational,
 	"/authorize":             authorizeGroup,
 	"/token":                 tokenGroup,
+	"/revoke":                tokenGroup,
 	"/.well-known/jwks.json": jwksGroup,
 }
 
@@ -186,6 +195,36 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:           deps.Logger,
 	}
 
+	// revokeValidator is /revoke's own (#38): built over the same keyset
+	// /token signs with (deps.Keyset.AsKeySource()), the same two
+	// algorithms RS-06's allow-list permits (tokenvalidator.RS256,
+	// tokenvalidator.ES256), checking an access token's signature and
+	// claims without the audience ValidateAccessToken's own resource-
+	// server caller needs — ValidateForRevocation's whole reason for
+	// existing. New only fails on an empty allow-list, a literal two
+	// elements long here, so a non-nil err is a programming mistake in
+	// this call, not a runtime condition — template.Must's own reasoning
+	// a few lines above, applied to this construction instead.
+	revokeValidator, err := tokenvalidator.New(
+		deps.Keyset.AsKeySource(),
+		[]tokenvalidator.Algorithm{tokenvalidator.RS256, tokenvalidator.ES256},
+		tokenvalidator.WithIssuer(deps.Issuer),
+		tokenvalidator.WithClock(deps.Now),
+	)
+	if err != nil {
+		panic("router: build /revoke's tokenvalidator.Validator: " + err.Error())
+	}
+
+	revoke := &revokeHandler{
+		clients:   deps.Clients,
+		families:  deps.Families,
+		validator: revokeValidator,
+		denylist:  deps.Denylist,
+		emitter:   deps.Emitter,
+		now:       deps.Now,
+		logger:    deps.Logger,
+	}
+
 	r := chi.NewRouter()
 	// RequestID first, so every layer after it — including a handler's own
 	// error logging — can correlate by it (RNF-10; see log.go's
@@ -217,6 +256,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodPost, "/token",
 		tokenGroup.wrap(nil, nil, token))
+
+	r.Method(http.MethodPost, "/revoke",
+		tokenGroup.wrap(nil, nil, revoke))
 
 	r.Method(http.MethodGet, "/.well-known/jwks.json",
 		jwksGroup.wrap(nil, nil, jwks))

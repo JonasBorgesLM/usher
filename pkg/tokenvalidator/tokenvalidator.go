@@ -11,7 +11,11 @@
 //
 // Two consumers exist in this repository: the gateway, through an
 // in-process keys.Keyset (via Keyset.AsKeySource), and the demo resource
-// server, through NewJWKSSource over HTTP.
+// server, through NewJWKSSource over HTTP. A third, narrower one was added
+// in #38: the AS's own /revoke handler (cmd/usher), through
+// ValidateForRevocation — it needs the same signature verification
+// ValidateAccessToken already does, minus the audience check a resource
+// server's own caller needs and a /revoke caller does not have.
 package tokenvalidator
 
 import (
@@ -61,6 +65,7 @@ var ErrNoAllowedAlgorithms = errors.New("tokenvalidator: allowed must be non-emp
 type config struct {
 	clockSkew time.Duration
 	issuer    string
+	clock     func() time.Time
 }
 
 // Option configures a Validator at construction.
@@ -70,6 +75,17 @@ type Option func(*config)
 // seconds — never in minutes.
 func WithClockSkew(d time.Duration) Option {
 	return func(c *config) { c.clockSkew = d }
+}
+
+// WithClock overrides what "now" means for exp/nbf/iat validation —
+// internal/keys.Load's own WithClock (#32) found the same gap first: a
+// caller that issues and validates within the same process over an
+// injected, non-real clock (as cmd/usher's own test fixtures do) needs
+// validation to agree with issuance, which jwx's own default (the real
+// system clock) cannot. A nil now (the default) keeps jwx's own real-time
+// behavior unchanged.
+func WithClock(now func() time.Time) Option {
+	return func(c *config) { c.clock = now }
 }
 
 // WithIssuer requires an exact iss match.
@@ -148,44 +164,72 @@ var ErrClaimsInvalid = errors.New("tokenvalidator: claims invalid")
 // fail the same way, by construction, rather than by a check this function
 // could get backwards.
 func (v *Validator) ValidateAccessToken(ctx context.Context, raw, wantAudience string) (Claims, error) {
+	token, err := v.verify(ctx, raw, wantAudience)
+	if err != nil {
+		return Claims{}, err
+	}
+	return claimsFromToken(token)
+}
+
+// ValidateForRevocation checks the same algorithm allow-list (RS-06), typ
+// == "at+jwt" (RS-08) and claim set (RS-07) ValidateAccessToken does,
+// except the audience: /revoke's only caller is the client the token was
+// issued to (RFC 7009 §2.1), not a resource server enforcing RS-19 for one
+// particular audience, so there is no single wantAudience to require
+// here. The caller compares the returned Claims.ClientID against its own
+// authenticated client instead — that comparison is RFC 7009's own
+// binding check, not this package's.
+func (v *Validator) ValidateForRevocation(ctx context.Context, raw string) (Claims, error) {
+	token, err := v.verify(ctx, raw, "")
+	if err != nil {
+		return Claims{}, err
+	}
+	return claimsFromToken(token)
+}
+
+// verify is ValidateAccessToken and ValidateForRevocation's shared core —
+// kid/typ extraction, the allow-list check (RS-06), and the claim set
+// (RS-07), with the audience check applied only when wantAudience is
+// non-empty, the one claim whose requirement differs between the two
+// callers.
+func (v *Validator) verify(ctx context.Context, raw, wantAudience string) (jwt.Token, error) {
 	msg, err := jws.Parse([]byte(raw))
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: parse: %w", ErrMalformedToken, err)
+		return nil, fmt.Errorf("%w: parse: %w", ErrMalformedToken, err)
 	}
 	sigs := msg.Signatures()
 	if len(sigs) != 1 {
-		return Claims{}, fmt.Errorf("%w: %d signatures, want exactly 1", ErrMalformedToken, len(sigs))
+		return nil, fmt.Errorf("%w: %d signatures, want exactly 1", ErrMalformedToken, len(sigs))
 	}
 	hdrs := sigs[0].ProtectedHeaders()
 
 	kid, ok := hdrs.KeyID()
 	if !ok || kid == "" {
-		return Claims{}, fmt.Errorf("%w: no kid in the protected header", ErrMalformedToken)
+		return nil, fmt.Errorf("%w: no kid in the protected header", ErrMalformedToken)
 	}
 
 	typ, ok := hdrs.Type()
 	if !ok || typ != "at+jwt" {
-		return Claims{}, fmt.Errorf("%w: typ = %q, want %q", ErrWrongTokenType, typ, "at+jwt")
+		return nil, fmt.Errorf("%w: typ = %q, want %q", ErrWrongTokenType, typ, "at+jwt")
 	}
 
 	pub, registeredAlg, err := v.source.Key(ctx, kid)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: resolve kid %q: %w", ErrMalformedToken, kid, err)
+		return nil, fmt.Errorf("%w: resolve kid %q: %w", ErrMalformedToken, kid, err)
 	}
 	if !slices.Contains(v.allowed, registeredAlg) {
-		return Claims{}, fmt.Errorf("%w: kid %q is registered under %q, not in this validator's allow-list",
+		return nil, fmt.Errorf("%w: kid %q is registered under %q, not in this validator's allow-list",
 			ErrAlgorithmNotAllowed, kid, registeredAlg)
 	}
 	jwaAlg, err := signatureAlgorithm(registeredAlg)
 	if err != nil {
-		return Claims{}, fmt.Errorf("%w: %w", ErrAlgorithmNotAllowed, err)
+		return nil, fmt.Errorf("%w: %w", ErrAlgorithmNotAllowed, err)
 	}
 
-	token, err := jwt.Parse([]byte(raw),
+	opts := []jwt.ParseOption{
 		jwt.WithKey(jwaAlg, pub),
 		jwt.WithContext(ctx),
 		jwt.WithIssuer(v.cfg.issuer),
-		jwt.WithAudience(wantAudience),
 		jwt.WithAcceptableSkew(v.cfg.clockSkew),
 		jwt.WithRequiredClaim(jwt.ExpirationKey),
 		jwt.WithRequiredClaim(jwt.NotBeforeKey),
@@ -193,12 +237,19 @@ func (v *Validator) ValidateAccessToken(ctx context.Context, raw, wantAudience s
 		jwt.WithRequiredClaim(jwt.JwtIDKey),
 		jwt.WithRequiredClaim(jwt.SubjectKey),
 		jwt.WithRequiredClaim("client_id"),
-	)
-	if err != nil {
-		return Claims{}, fmt.Errorf("%w: %w", ErrClaimsInvalid, err)
+	}
+	if wantAudience != "" {
+		opts = append(opts, jwt.WithAudience(wantAudience))
+	}
+	if v.cfg.clock != nil {
+		opts = append(opts, jwt.WithClock(jwt.ClockFunc(v.cfg.clock)))
 	}
 
-	return claimsFromToken(token)
+	token, err := jwt.Parse([]byte(raw), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrClaimsInvalid, err)
+	}
+	return token, nil
 }
 
 // signatureAlgorithm maps a KeySource's registered Algorithm to the
