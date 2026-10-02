@@ -85,6 +85,15 @@ type RefreshToken struct {
 	ConsumedAt *time.Time
 }
 
+// ErrRefreshTokenNotFound reports that Lookup's hash matches no row, or
+// matches one whose idle (RefreshToken.ExpiresAt) or absolute
+// (Family.ExpiresAt) lifetime has already passed — indistinguishably, the
+// same ambiguity ErrCodeNotFound already gives a consumed-or-expired code.
+// A family that exists, is unexpired, but has RevokedAt set is NOT folded
+// in here: Lookup returns it as-is, so a caller deciding what revocation
+// means (reuse detection, administrative revocation) can see it.
+var ErrRefreshTokenNotFound = errors.New("oauth: refresh token not found")
+
 // FamilyStore is Postgres-backed (ADR-0002: losing it makes reuse detection
 // fail silently, which is worse than not detecting it).
 type FamilyStore interface {
