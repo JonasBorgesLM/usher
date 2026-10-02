@@ -570,3 +570,237 @@ func TestKey_MarshalJSON_RedactsPrivate(t *testing.T) {
 		t.Errorf("the JSON log record does not mention redaction: %s", out)
 	}
 }
+
+// TestLoad_SignFromNotBeforeRetireAtRefuses is #32's own done-when, the one
+// window-ordering case TestLoad_PublishAtAfterSignFromRefuses and
+// TestLoad_RetirementWindowTooShortRefuses don't already cover: a key whose
+// sign_from is not strictly before its own retire_at (equal, or reversed)
+// is nonsensical regardless of RS-09's formula -- it would never have a
+// moment where it both signs and remains published afterward.
+//
+// Negative control: with the `!k.SignFrom.Before(k.RetireAt)` check removed
+// from Load, this test failed -- a key whose retire_at equals its own
+// sign_from loaded successfully. Verified by hand, restored before
+// committing.
+func TestLoad_SignFromNotBeforeRetireAtRefuses(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	writeKeyFile(t, dir, "key-1", string(tokenvalidator.RS256), rsaKey(t),
+		now.Add(-time.Hour), now, now) // retire_at == sign_from
+
+	if _, err := Load(dir, testClockSkew, testMaxAccessTokenTTL, testConsumerJWKSCacheTTL, nil); err == nil {
+		t.Fatal("Load with retire_at == sign_from succeeded, want an error")
+	}
+}
+
+// fakeClock is a settable clock, the same small pattern
+// internal/store/redis's own tests use for the same reason: Keyset.Signing
+// and Keyset.Published already take an explicit t, but AsKeySource's Key
+// method -- the one a tokenvalidator.Validator actually calls -- did not,
+// until WithClock (#32) gave it one to read.
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time          { return c.t }
+func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+// signCompactForTest builds a minimal compact JWS over key, the same shape
+// TestKey_SigningProducesKIDHeader already uses -- what a real /token
+// handler's signAccessToken (cmd/usher) would produce, simplified to just
+// enough payload for this file's rotation tests to verify against.
+func signCompactForTest(t *testing.T, key Key) []byte {
+	t.Helper()
+	jwk, err := key.JWK()
+	if err != nil {
+		t.Fatalf("Key.JWK: %v", err)
+	}
+	var alg jwa.SignatureAlgorithm
+	switch key.Algorithm {
+	case tokenvalidator.RS256:
+		alg = jwa.RS256()
+	case tokenvalidator.ES256:
+		alg = jwa.ES256()
+	default:
+		t.Fatalf("unsupported algorithm %q", key.Algorithm)
+	}
+	signed, err := jws.Sign([]byte(`{"sub":"alice"}`), jws.WithKey(alg, jwk))
+	if err != nil {
+		t.Fatalf("jws.Sign: %v", err)
+	}
+	return signed
+}
+
+// jwaFor maps a tokenvalidator.Algorithm to the jwa.SignatureAlgorithm
+// jws.Verify needs -- the same one-line mapping cmd/usher/token.go's own
+// signAccessToken and pkg/tokenvalidator's signatureAlgorithm each already
+// have; duplicated here rather than imported, since this file is
+// verifying against its own signed fixtures, not calling production
+// signing code.
+func jwaFor(t *testing.T, a tokenvalidator.Algorithm) jwa.SignatureAlgorithm {
+	t.Helper()
+	switch a {
+	case tokenvalidator.RS256:
+		return jwa.RS256()
+	case tokenvalidator.ES256:
+		return jwa.ES256()
+	default:
+		t.Fatalf("unsupported algorithm %q", a)
+		return jwa.EmptySignatureAlgorithm()
+	}
+}
+
+// TestRotation_OldKeySignedTokenVerifiesUntilRetirement is #32's second
+// done-when: across a scheduled rotation, a token the old key signed
+// before the switch keeps verifying afterward, for as long as the old key
+// stays published -- RS-09's whole point, exercised end to end (sign,
+// advance the clock past the rotation boundary, resolve the old kid
+// through the same KeySource a real Validator would use, verify) rather
+// than only checked against Signing/Published in isolation. The "new" key
+// is deliberately given a publish_at in the real future (newSignFrom is
+// 2h ahead of the real clock at test start) so that resolving it via
+// AsKeySource only succeeds if the clock the test advanced is the one
+// AsKeySource actually reads — the real wall clock never reaches it
+// during this test's run.
+//
+// Negative control: with `s.keyset.now()` in keySource.Key reverted to
+// `time.Now()`, this test failed on the "new" resolution below --
+// ErrUnknownKID, since "new"'s publish_at (real-now + ~1h49m) is still in
+// the real future even after this test's fake clock was advanced past
+// retirement. Verified by hand, restored before committing.
+func TestRotation_OldKeySignedTokenVerifiesUntilRetirement(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now()
+	oldSignFrom := base
+	newSignFrom := base.Add(2 * time.Hour)
+	minRetire := testMaxAccessTokenTTL + testClockSkew + testConsumerJWKSCacheTTL
+	oldRetireAt := newSignFrom.Add(minRetire + time.Minute)
+
+	writeKeyFile(t, dir, "old", string(tokenvalidator.RS256), rsaKey(t),
+		oldSignFrom.Add(-testConsumerJWKSCacheTTL-time.Minute), oldSignFrom, oldRetireAt)
+	writeKeyFile(t, dir, "new", string(tokenvalidator.RS256), rsaKey(t),
+		newSignFrom.Add(-testConsumerJWKSCacheTTL-time.Minute), newSignFrom, base.AddDate(1, 0, 0))
+
+	clock := &fakeClock{t: oldSignFrom}
+	ks, err := Load(dir, testClockSkew, testMaxAccessTokenTTL, testConsumerJWKSCacheTTL, nil, WithClock(clock.now))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	oldKey, err := ks.Signing(clock.now())
+	if err != nil {
+		t.Fatalf("Signing before rotation: %v", err)
+	}
+	if oldKey.KID != "old" {
+		t.Fatalf("Signing before rotation = %q, want %q", oldKey.KID, "old")
+	}
+	signed := signCompactForTest(t, oldKey)
+
+	// Cross the rotation boundary, but stop well short of "old"'s own
+	// retire_at.
+	clock.advance(oldRetireAt.Add(-time.Minute).Sub(oldSignFrom))
+
+	newKey, err := ks.Signing(clock.now())
+	if err != nil {
+		t.Fatalf("Signing after rotation: %v", err)
+	}
+	if newKey.KID != "new" {
+		t.Errorf("Signing after rotation = %q, want %q (the switch did not happen)", newKey.KID, "new")
+	}
+
+	source := ks.AsKeySource()
+	pub, alg, err := source.Key(t.Context(), "old")
+	if err != nil {
+		t.Fatalf("resolve kid %q after rotation: %v", "old", err)
+	}
+	if alg != tokenvalidator.RS256 {
+		t.Errorf("resolved algorithm = %q, want %q", alg, tokenvalidator.RS256)
+	}
+	if _, err := jws.Verify(signed, jws.WithKey(jwaFor(t, alg), pub)); err != nil {
+		t.Errorf("a token the old key signed before rotation no longer verifies after it: %v", err)
+	}
+
+	// The discriminator: "new"'s publish_at is in the real future, so
+	// this only resolves if AsKeySource is reading the fake clock this
+	// test advanced, not the real wall clock.
+	if _, _, err := source.Key(t.Context(), "new"); err != nil {
+		t.Errorf("resolve kid %q after rotation: %v (AsKeySource may be reading the wrong clock)", "new", err)
+	}
+}
+
+// TestRotation_SkewedClocksBothProduceVerifiableTokens is #32's third
+// done-when: ADR-0015's own stated consequence ("clock skew between
+// instances can make two keys sign briefly; both are published, so both
+// verify") made concrete. Two Keyset instances over the identical keyset
+// files, reading clocks testClockSkew apart and straddling the rotation
+// boundary, may each pick a different Signing key -- and a consumer
+// resolving either kid, at a third, independent reference time, must
+// still verify what either one signed.
+func TestRotation_SkewedClocksBothProduceVerifiableTokens(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now()
+	oldSignFrom := base.Add(-time.Hour)
+	newSignFrom := base
+	minRetire := testMaxAccessTokenTTL + testClockSkew + testConsumerJWKSCacheTTL
+	oldRetireAt := newSignFrom.Add(minRetire + time.Minute)
+
+	writeKeyFile(t, dir, "old", string(tokenvalidator.RS256), rsaKey(t),
+		oldSignFrom.Add(-testConsumerJWKSCacheTTL-time.Minute), oldSignFrom, oldRetireAt)
+	writeKeyFile(t, dir, "new", string(tokenvalidator.RS256), rsaKey(t),
+		newSignFrom.Add(-testConsumerJWKSCacheTTL-time.Minute), newSignFrom, base.AddDate(1, 0, 0))
+
+	// Instance A's clock sits just before the rotation boundary; instance
+	// B's sits just after -- testClockSkew apart, straddling newSignFrom,
+	// so the two instances may disagree about which key is currently
+	// signing.
+	clockA := &fakeClock{t: newSignFrom.Add(-testClockSkew / 2)}
+	clockB := &fakeClock{t: newSignFrom.Add(testClockSkew / 2)}
+
+	ksA, err := Load(dir, testClockSkew, testMaxAccessTokenTTL, testConsumerJWKSCacheTTL, nil, WithClock(clockA.now))
+	if err != nil {
+		t.Fatalf("Load (A): %v", err)
+	}
+	ksB, err := Load(dir, testClockSkew, testMaxAccessTokenTTL, testConsumerJWKSCacheTTL, nil, WithClock(clockB.now))
+	if err != nil {
+		t.Fatalf("Load (B): %v", err)
+	}
+
+	keyA, err := ksA.Signing(clockA.now())
+	if err != nil {
+		t.Fatalf("Signing (A): %v", err)
+	}
+	keyB, err := ksB.Signing(clockB.now())
+	if err != nil {
+		t.Fatalf("Signing (B): %v", err)
+	}
+
+	signedA := signCompactForTest(t, keyA)
+	signedB := signCompactForTest(t, keyB)
+
+	// A consumer validating independently, at its own reference time
+	// (base, the rotation boundary itself) -- not either instance's
+	// skewed clock -- must still accept both: both keys were published
+	// well before this moment.
+	consumerClock := &fakeClock{t: base}
+	consumer, err := Load(dir, testClockSkew, testMaxAccessTokenTTL, testConsumerJWKSCacheTTL, nil, WithClock(consumerClock.now))
+	if err != nil {
+		t.Fatalf("Load (consumer): %v", err)
+	}
+	source := consumer.AsKeySource()
+
+	for _, tc := range []struct {
+		name   string
+		kid    string
+		signed []byte
+	}{
+		{"instance A's token", keyA.KID, signedA},
+		{"instance B's token", keyB.KID, signedB},
+	} {
+		pub, alg, err := source.Key(t.Context(), tc.kid)
+		if err != nil {
+			t.Errorf("%s: consumer could not resolve kid %q: %v", tc.name, tc.kid, err)
+			continue
+		}
+		if _, err := jws.Verify(tc.signed, jws.WithKey(jwaFor(t, alg), pub)); err != nil {
+			t.Errorf("%s (kid %q) did not verify at the consumer's independent clock: %v", tc.name, tc.kid, err)
+		}
+	}
+}
