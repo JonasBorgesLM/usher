@@ -586,12 +586,10 @@ if this `Emitter` cannot.
 ```go
 package proxy
 
-// Denylist is the gateway-local revocation check (RF-06, ADR-0014). Its
-// only consumer at the type level is this package; the demo resource
-// server never sees it (RS-18) because cmd/resource-server does not
-// import internal/ at all. Implemented in internal/store/redis (#38),
-// with two callers: /revoke (cmd/usher) writes it; the gateway's own
-// NewHandler, below, reads it once M6 implements it.
+// Denylist is the gateway-local revocation check (RF-06, ADR-0014).
+// Implemented in internal/store/redis (#38); consulted by NewHandler
+// itself (#40) on every request, after signature verification and
+// before forwarding.
 type Denylist interface {
 	// Contains reports whether jti is revoked. A non-nil error must be
 	// treated as revoked by the caller (RNF-04: infrastructure failure
@@ -607,15 +605,38 @@ type Route struct {
 	PathPrefix string
 	Upstream   *url.URL
 	Audience   string
-	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream
+	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42, unused by #40
 }
 
-// NewHandler builds the reverse proxy for one Route. It reaches tokens only
-// through validator (pkg/tokenvalidator, constructed over
-// keys.Keyset.AsKeySource — internal/keys, not internal/oauth) and denylist.
-// This is the whole reason ADR-0001's boundary holds by construction:
-// nothing here has a way to reach an oauth.Code or oauth.Family type.
-func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist) http.Handler
+// NewHandler builds the reverse proxy for one Route (#40). It reaches
+// tokens only through validator (pkg/tokenvalidator, constructed over
+// keys.Keyset.AsKeySource — internal/keys, not internal/oauth) and
+// denylist. This is the whole reason ADR-0001's boundary holds by
+// construction: nothing here has a way to reach an oauth.Code or
+// oauth.Family type.
+//
+// Per request: strip every inbound `X-Auth-*` header (RS-17, an
+// allow-list of what survives — nothing, in that namespace, from the
+// client); extract the bearer token and call
+// validator.ValidateAccessToken(ctx, token, route.Audience); on success,
+// consult denylist.Contains(claims.JTI) (RF-06) — an error here denies,
+// the same as "revoked" (RNF-04); only then inject X-Auth-Subject,
+// X-Auth-Client and X-Auth-Scope from the validated claims and forward
+// via httputil.ReverseProxy. Any failure in that sequence is a bare 401,
+// no body — RS-23/RS-25's "no internal detail" extended to the gateway's
+// own auth failures.
+//
+// The ReverseProxy itself carries RS-20/RS-21: a custom ErrorHandler
+// that never writes err's own text to the response (Go's transport
+// errors embed the literal upstream address), a Transport with explicit
+// dial/handshake/response-header/idle timeouts (net/http's own default
+// is none), and a ModifyResponse that caps the upstream response body at
+// a fixed size before any of it reaches the client. Hop-by-hop headers
+// and "never follow an upstream redirect" are net/http/httputil's own
+// documented behavior, not something this package adds.
+//
+// A nil logger discards.
+func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist, logger *slog.Logger) http.Handler
 ```
 
 ---
