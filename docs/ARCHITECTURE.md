@@ -144,7 +144,11 @@ type RefreshToken struct {
 // FamilyStore is Postgres-backed (ADR-0002: losing it makes reuse detection
 // fail silently, which is worse than not detecting it).
 type FamilyStore interface {
-	CreateFamily(ctx context.Context, f Family, first RefreshToken) error
+	// CreateFamily returns the family's own generated id (#37: its first
+	// real caller needs it immediately, to Tombstone the authorization
+	// code that produced it, without a second round trip through Lookup
+	// just to learn what CreateFamily already knew).
+	CreateFamily(ctx context.Context, f Family, first RefreshToken) (familyID string, err error)
 
 	// Rotate is RS-11's atomic compare-and-set. The race is decided entirely
 	// by one conditional UPDATE (§2.2's schema note has the exact query) —

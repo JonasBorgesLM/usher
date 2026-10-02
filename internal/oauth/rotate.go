@@ -21,6 +21,12 @@ import (
 // same sentinel ConsumeCode's own failures already use, RS-25's
 // ambiguity held here too.
 //
+// emitter may be nil — "nil emits nothing" is the established contract
+// every other audit.Emitter consumer in this codebase already follows
+// (cmd/usher/login.go's own h.emit), and #37's /token handler is wired
+// the same way: RF-09 emission is an optional dependency, never a
+// precondition for the grant it describes to work at all.
+//
 // next must already carry the FamilyID the caller resolved (RS-34's
 // binding checks, #37) — this function does not look it up itself.
 func RotateRefreshToken(ctx context.Context, families FamilyStore, emitter audit.Emitter, hash [32]byte, next RefreshToken) error {
@@ -32,11 +38,13 @@ func RotateRefreshToken(ctx context.Context, families FamilyStore, emitter audit
 		if revokeErr := families.Revoke(ctx, next.FamilyID, "reuse_detected"); revokeErr != nil {
 			return fmt.Errorf("oauth: revoke reused family: %w", revokeErr)
 		}
-		emitter.Emit(ctx, audit.Event{
-			Type:    audit.EventRefreshReuse,
-			Outcome: audit.OutcomeFailure,
-			At:      time.Now(),
-		})
+		if emitter != nil {
+			emitter.Emit(ctx, audit.Event{
+				Type:    audit.EventRefreshReuse,
+				Outcome: audit.OutcomeFailure,
+				At:      time.Now(),
+			})
+		}
 		return ErrInvalidGrant
 	}
 	return nil

@@ -72,6 +72,28 @@ func TestRotateRefreshToken_ReuseRevokesFamilyAndEmitsAudit(t *testing.T) {
 	}
 }
 
+// TestRotateRefreshToken_NilEmitterDoesNotPanic is a real finding from
+// wiring this function into #37's /token handler: audit.Emitter is
+// documented as an optional dependency everywhere else in this codebase
+// ("nil emits nothing" -- cmd/usher/login.go's own h.emit), but calling
+// Emit directly through a nil interface value panics regardless of what
+// that convention says. A deployment that never wires RF-09 emission at
+// all would panic on its very first reuse attempt.
+//
+// Negative control: with the `if emitter != nil` guard removed from
+// RotateRefreshToken's reuse branch, this test panicked instead of
+// returning ErrInvalidGrant. Verified by hand, restored before
+// committing.
+func TestRotateRefreshToken_NilEmitterDoesNotPanic(t *testing.T) {
+	store := newFakeFamilyStore()
+	store.seedToken(testHash("token-a"), true) // already consumed -- reuse
+
+	err := RotateRefreshToken(context.Background(), store, nil, testHash("token-a"), RefreshToken{Hash: testHash("token-b"), FamilyID: "family-1"})
+	if !errors.Is(err, ErrInvalidGrant) {
+		t.Errorf("RotateRefreshToken with a nil emitter = %v, want ErrInvalidGrant", err)
+	}
+}
+
 func TestRotateRefreshToken_UnknownHashIsInvalidGrant(t *testing.T) {
 	store := newFakeFamilyStore()
 	sink := audit.NewMemorySink()
@@ -104,7 +126,7 @@ type erroringFamilyStore struct {
 	err error
 }
 
-func (e *erroringFamilyStore) CreateFamily(context.Context, Family, RefreshToken) error {
+func (e *erroringFamilyStore) CreateFamily(context.Context, Family, RefreshToken) (string, error) {
 	panic("not used")
 }
 func (e *erroringFamilyStore) Rotate(context.Context, [32]byte, RefreshToken) (bool, error) {

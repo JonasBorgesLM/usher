@@ -73,6 +73,16 @@ type routerDeps struct {
 	AuthCodeTTL    time.Duration
 	AccessTokenTTL time.Duration
 
+	// Families is /token's refresh_token grant (#36, #37): the same
+	// FamilyStore the authorization_code grant creates a family through
+	// when the client's grant_types include refresh_token (RF-02 Flow 2
+	// steps 6-7), and that the refresh_token grant itself rotates
+	// (RF-04 Flow 3). RefreshIdleTTL and RefreshAbsoluteTTL are RF-12's
+	// own pair for it.
+	Families           oauth.FamilyStore
+	RefreshIdleTTL     time.Duration
+	RefreshAbsoluteTTL time.Duration
+
 	// ConsumerJWKSCacheTTL is /.well-known/jwks.json's own Cache-Control
 	// max-age (#33) -- the same duration RS-09's retirement formula was
 	// already built against (keys.Load's own consumerJWKSCacheTTL
@@ -156,13 +166,17 @@ func newRouter(deps routerDeps) *chi.Mux {
 	}
 
 	token := &tokenHandler{
-		clients:        deps.Clients,
-		codes:          deps.Codes,
-		keyset:         deps.Keyset,
-		issuer:         deps.Issuer,
-		accessTokenTTL: deps.AccessTokenTTL,
-		now:            deps.Now,
-		logger:         deps.Logger,
+		clients:            deps.Clients,
+		codes:              deps.Codes,
+		families:           deps.Families,
+		emitter:            deps.Emitter,
+		keyset:             deps.Keyset,
+		issuer:             deps.Issuer,
+		accessTokenTTL:     deps.AccessTokenTTL,
+		refreshIdleTTL:     deps.RefreshIdleTTL,
+		refreshAbsoluteTTL: deps.RefreshAbsoluteTTL,
+		now:                deps.Now,
+		logger:             deps.Logger,
 	}
 
 	jwks := &jwksHandler{

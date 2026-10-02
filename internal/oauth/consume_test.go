@@ -76,7 +76,7 @@ func (f *fakeFamilyStore) seedToken(hash [32]byte, consumed bool) {
 	f.tokens[hash] = consumed
 }
 
-func (f *fakeFamilyStore) CreateFamily(context.Context, Family, RefreshToken) error {
+func (f *fakeFamilyStore) CreateFamily(context.Context, Family, RefreshToken) (string, error) {
 	panic("not used by ConsumeCode or RotateRefreshToken")
 }
 

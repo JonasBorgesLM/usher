@@ -103,6 +103,9 @@ func tokenDeps(t *testing.T, clients ...identity.Client) routerDeps {
 	deps := testDeps(t)
 	deps.Clients = clients
 	deps.Keyset = testKeyset(t, deps.Now())
+	deps.Families = newFakeFamilyStore()
+	deps.RefreshIdleTTL = 24 * time.Hour
+	deps.RefreshAbsoluteTTL = 7 * 24 * time.Hour
 	return deps
 }
 
@@ -416,14 +419,15 @@ func TestToken_PublicClientNeedsNoSecret(t *testing.T) {
 }
 
 // TestToken_UnsupportedGrantType is RFC 6749 §5.2's fixed code for a
-// grant_type this phase does not implement (refresh_token is M4).
+// grant_type this project does not implement at all (client_credentials
+// is M8).
 func TestToken_UnsupportedGrantType(t *testing.T) {
 	client := testClient()
 	deps := tokenDeps(t, client)
 	mux := newRouter(deps)
 
 	form := validTokenForm()
-	form.Set("grant_type", "refresh_token")
+	form.Set("grant_type", "client_credentials")
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, postToken(form, "", ""))

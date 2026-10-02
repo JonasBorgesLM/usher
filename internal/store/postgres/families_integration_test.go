@@ -65,7 +65,7 @@ func TestFamilyStore_CreateAndLookup_RoundTrip(t *testing.T) {
 
 	fam := testFamily(userID, time.Now().Add(time.Hour))
 	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(30 * time.Minute)}
-	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+	if _, err := store.CreateFamily(ctx, fam, tok); err != nil {
 		t.Fatalf("CreateFamily: %v", err)
 	}
 
@@ -117,7 +117,7 @@ func TestFamilyStore_LookupIdleExpiredReturnsNotFound(t *testing.T) {
 
 	fam := testFamily(userID, time.Now().Add(time.Hour))                           // absolute lifetime still valid
 	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(-time.Minute)} // idle lifetime already passed
-	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+	if _, err := store.CreateFamily(ctx, fam, tok); err != nil {
 		t.Fatalf("CreateFamily: %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestFamilyStore_LookupAbsoluteExpiredReturnsNotFound(t *testing.T) {
 
 	fam := testFamily(userID, time.Now().Add(-time.Minute))                     // absolute lifetime already passed
 	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(time.Hour)} // idle lifetime still valid
-	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+	if _, err := store.CreateFamily(ctx, fam, tok); err != nil {
 		t.Fatalf("CreateFamily: %v", err)
 	}
 
@@ -165,7 +165,7 @@ func TestFamilyStore_DBDumpYieldsNoUsableToken(t *testing.T) {
 
 	fam := testFamily(userID, time.Now().Add(time.Hour))
 	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(time.Hour)}
-	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+	if _, err := store.CreateFamily(ctx, fam, tok); err != nil {
 		t.Fatalf("CreateFamily: %v", err)
 	}
 
@@ -198,14 +198,11 @@ func seedFamilyWithToken(t *testing.T, store *FamilyStore, userID string) (famil
 	_, hash = testRawToken(t)
 	fam := testFamily(userID, time.Now().Add(time.Hour))
 	tok := oauth.RefreshToken{Hash: hash, ExpiresAt: time.Now().Add(time.Hour)}
-	if err := store.CreateFamily(ctx, fam, tok); err != nil {
+	familyID, err := store.CreateFamily(ctx, fam, tok)
+	if err != nil {
 		t.Fatalf("CreateFamily: %v", err)
 	}
-	gotFam, _, err := store.Lookup(ctx, hash)
-	if err != nil {
-		t.Fatalf("Lookup (resolve family id): %v", err)
-	}
-	return gotFam.ID, hash
+	return familyID, hash
 }
 
 func TestFamilyStore_Rotate_LegitimateExchangeSucceeds(t *testing.T) {
