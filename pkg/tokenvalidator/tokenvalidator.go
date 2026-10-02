@@ -19,14 +19,19 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jws"
 	"github.com/lestrrat-go/jwx/v4/jwt"
+
+	"github.com/JonasBorgesLM/moat/ratelimit"
 )
 
 // Algorithm is a signature algorithm a Validator's allow-list accepts
@@ -252,24 +257,147 @@ func (v *Validator) ValidateIDToken(ctx context.Context, raw, clientID string) (
 	panic("tokenvalidator: ValidateIDToken not implemented (M7)")
 }
 
+// ErrUnknownKID reports that no key in the most recently fetched JWKS
+// matches the requested kid — whether that document has ever been fetched
+// at all, a kid that never existed, or one that retired before this
+// source's cache last refreshed, indistinguishably (the same ambiguity
+// RS-25 already asks of invalid_grant, here applied to key lookup).
+var ErrUnknownKID = errors.New("tokenvalidator: no key matches the requested kid")
+
+// ErrRefetchRateLimited reports that this source already attempted
+// refetchLimit fetches within refetchWindow, and refuses to attempt
+// another — RS-09's own point: without this, a flood of tokens bearing
+// random, never-valid kid values would turn every lookup miss into an
+// outbound HTTP call, turning the resource server into a DoS amplifier
+// against the AS (T-15).
+var ErrRefetchRateLimited = errors.New("tokenvalidator: JWKS refetch rate limit exceeded")
+
+// maxJWKSResponseBytes bounds how much of a JWKS response this source will
+// read — a real keyset is a handful of keys, comfortably under this; a
+// response that large is either misconfigured or hostile, either way not
+// worth holding entirely in memory to find out.
+const maxJWKSResponseBytes = 1 << 20 // 1 MiB
+
+// refetchLimiterKey is the single, constant key every call shares against
+// the rate limiter below. Keying by kid instead would defeat the limit
+// entirely: the attack this guards against is a flood of distinct,
+// never-valid kid values, each of which would get its own fresh bucket.
+const refetchLimiterKey = "jwks-refetch"
+
 // JWKSSource is a KeySource backed by a remote JWKS document, with
 // rate-limited refetch on an unknown kid (RS-09) — the limit that keeps a
 // flood of forged-kid tokens from turning the resource server into a DoS
-// amplifier against the AS.
+// amplifier against the AS. There is no separate, time-based cache
+// refresh: the cache is replaced only by a fetch a kid miss triggered,
+// which is what lets a newly published key be picked up without a
+// restart — the stated, deliberate scope of this phase (REQUIREMENTS
+// §11, M3). A key already in the cache is served from it indefinitely
+// until some other kid miss happens to trigger a refetch that drops it;
+// RS-09's own residual ("a consumer validating directly keeps accepting
+// a key until its own JWKS cache expires") already covers the gap this
+// leaves.
 type JWKSSource struct {
 	url           string
 	client        *http.Client
 	refetchLimit  int
 	refetchWindow time.Duration
+	limiter       *ratelimit.Limiter
+
+	mu     sync.RWMutex
+	cached jwk.Set // nil until the first successful fetch
 }
 
-// NewJWKSSource builds a JWKSSource. Fetching and caching are implemented in
-// M3 (REQUIREMENTS §11).
+// NewJWKSSource builds a JWKSSource. refetchLimit fetches are allowed as
+// an immediate burst, refilling continuously at refetchLimit per
+// refetchWindow — moat/ratelimit's own token-bucket algorithm, the same
+// one already governing every other rate limit in this project (RS-22),
+// chosen there and here because a fixed window permits up to twice the
+// intended rate across its own boundary.
 func NewJWKSSource(jwksURL string, httpClient *http.Client, refetchLimit int, refetchWindow time.Duration) *JWKSSource {
-	return &JWKSSource{url: jwksURL, client: httpClient, refetchLimit: refetchLimit, refetchWindow: refetchWindow}
+	perSecond := float64(refetchLimit) / refetchWindow.Seconds()
+	return &JWKSSource{
+		url: jwksURL, client: httpClient,
+		refetchLimit: refetchLimit, refetchWindow: refetchWindow,
+		limiter: ratelimit.New(refetchLimit, perSecond),
+	}
 }
 
-// Key implements KeySource. Implemented in M3.
+// Key implements KeySource: a cache hit returns immediately; a miss
+// spends one of this source's rate-limited refetch attempts, then tries
+// the lookup again against whatever the fetch returned.
 func (s *JWKSSource) Key(ctx context.Context, kid string) (crypto.PublicKey, Algorithm, error) {
-	panic("tokenvalidator: JWKSSource.Key not implemented (M3)")
+	if pub, alg, found := s.lookup(kid); found {
+		return pub, alg, nil
+	}
+
+	if !s.limiter.Allow(ctx, refetchLimiterKey) {
+		return nil, "", ErrRefetchRateLimited
+	}
+	if err := s.fetch(ctx); err != nil {
+		return nil, "", fmt.Errorf("tokenvalidator: fetch JWKS: %w", err)
+	}
+
+	pub, alg, found := s.lookup(kid)
+	if !found {
+		return nil, "", ErrUnknownKID
+	}
+	return pub, alg, nil
+}
+
+// lookup answers kid against the cache alone, taking no lock longer than
+// reading it requires and never reaching the network.
+func (s *JWKSSource) lookup(kid string) (crypto.PublicKey, Algorithm, bool) {
+	s.mu.RLock()
+	cached := s.cached
+	s.mu.RUnlock()
+	if cached == nil {
+		return nil, "", false
+	}
+	key, ok := cached.LookupKeyID(kid)
+	if !ok {
+		return nil, "", false
+	}
+	pub, err := jwk.Export[any](key)
+	if err != nil {
+		return nil, "", false
+	}
+	alg, ok := key.Algorithm()
+	if !ok {
+		return nil, "", false
+	}
+	return pub, Algorithm(alg.String()), true
+}
+
+// fetch replaces the cache with a freshly retrieved JWKS document. It
+// never partially updates the cache: a failed or malformed fetch leaves
+// whatever was cached before untouched, so a transient error at the AS
+// cannot turn into every key becoming unresolvable.
+func (s *JWKSSource) fetch(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.url, http.NoBody)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // nothing actionable; the read below already surfaces a torn response
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSResponseBytes))
+	if err != nil {
+		return fmt.Errorf("read response: %w", err)
+	}
+	set, err := jwk.Parse(body)
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+
+	s.mu.Lock()
+	s.cached = set
+	s.mu.Unlock()
+	return nil
 }
