@@ -13,12 +13,12 @@ import (
 )
 
 // FamilyStore implements oauth.FamilyStore over refresh_families and
-// refresh_tokens (migrations/0001_initial_schema.sql). Only CreateFamily
-// and Lookup are implemented here (#35: issuance and hashed storage);
-// Rotate, Revoke and RevokeAllForSubject panic rather than silently
-// succeed, the same convention pkg/tokenvalidator's own not-yet-implemented
-// methods use — their real bodies are #36 (atomic reuse detection), #37
-// (client/grant binding) and #38 (revocation) respectively.
+// refresh_tokens (migrations/0001_initial_schema.sql). CreateFamily,
+// Lookup (#35: issuance and hashed storage), Rotate and Revoke (#36:
+// atomic reuse detection) are implemented here; RevokeAllForSubject
+// panics rather than silently succeeding, the same convention
+// pkg/tokenvalidator's own not-yet-implemented methods use — its real
+// body, administrative and consent revocation, is #38's own scope.
 type FamilyStore struct {
 	pool *pgxpool.Pool
 }
@@ -117,14 +117,71 @@ func (s *FamilyStore) Lookup(ctx context.Context, hash [32]byte) (oauth.Family, 
 	return fam, tok, nil
 }
 
-// Rotate implements oauth.FamilyStore. Implemented in #36.
+// Rotate implements oauth.FamilyStore: the single conditional UPDATE
+// RS-11 requires, never a SELECT followed by one. docs/ARCHITECTURE.md
+// §2.2's own "verbatim" query conditioned only on `consumed_at IS NULL`;
+// this adds `f.revoked_at IS NULL` to the SAME statement (#36's own
+// finding, recorded there) — without it, a family revoked for reuse on
+// one token still lets its never-consumed successor rotate normally,
+// since that row's own consumed_at was never touched. Folding the check
+// into this one UPDATE, rather than a separate read beforehand, keeps
+// RS-11's "atomic, never read-then-write" guarantee covering this case
+// too, instead of opening a second TOCTOU window next to the one RS-11
+// already closes.
+//
+// consumed == true: next is inserted in the same transaction as the
+// UPDATE that won. consumed == false: nothing is inserted and nothing is
+// committed — reuse (or a lost race, which this statement cannot tell
+// apart, by ADR-0012's own design) is for the caller to act on
+// (RotateRefreshToken, internal/oauth).
 func (s *FamilyStore) Rotate(ctx context.Context, hash [32]byte, next oauth.RefreshToken) (bool, error) {
-	panic("postgres: FamilyStore.Rotate not implemented (#36)")
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("postgres: begin rotate: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // a committed tx makes this a no-op; a lost race rolls back on purpose
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE refresh_tokens t SET consumed_at = now()
+		 FROM refresh_families f
+		 WHERE t.hash = $1 AND t.consumed_at IS NULL AND f.id = t.family_id AND f.revoked_at IS NULL`,
+		hash[:],
+	)
+	if err != nil {
+		return false, fmt.Errorf("postgres: rotate refresh token: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO refresh_tokens (hash, family_id, expires_at) VALUES ($1, $2, $3)`,
+		next.Hash[:], next.FamilyID, next.ExpiresAt,
+	); err != nil {
+		return false, fmt.Errorf("postgres: insert next refresh token: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("postgres: commit rotate: %w", err)
+	}
+	return true, nil
 }
 
-// Revoke implements oauth.FamilyStore. Implemented in #38.
+// Revoke implements oauth.FamilyStore, idempotently: a family already
+// revoked keeps its original revoked_at/revoked_reason rather than
+// having a later call overwrite either — RS-11's reuse detection and a
+// later admin or consent revocation (#38) must not be able to clobber
+// each other's record of which one actually happened first.
 func (s *FamilyStore) Revoke(ctx context.Context, familyID, reason string) error {
-	panic("postgres: FamilyStore.Revoke not implemented (#38)")
+	_, err := s.pool.Exec(ctx,
+		`UPDATE refresh_families SET revoked_at = now(), revoked_reason = $1
+		 WHERE id = $2 AND revoked_at IS NULL`,
+		reason, familyID,
+	)
+	if err != nil {
+		return fmt.Errorf("postgres: revoke refresh family: %w", err)
+	}
+	return nil
 }
 
 // RevokeAllForSubject implements oauth.FamilyStore. Implemented in #38.

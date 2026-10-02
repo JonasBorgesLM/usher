@@ -123,10 +123,14 @@ func TestMigrate_RefusesAnEditedMigration(t *testing.T) {
 }
 
 // TestRefreshTokenConsumption_AtomicUnderConcurrency is RS-11 at the SQL
-// primitive itself, ahead of FamilyStore.Rotate (M4): concurrent
-// UPDATE ... WHERE consumed_at IS NULL statements against the same row must
-// let exactly one succeed. docs/ARCHITECTURE.md §2.2 and the 0001 migration
-// both point at this exact query.
+// primitive itself, decoupled from FamilyStore.Rotate's own tests (#36,
+// families_integration_test.go): concurrent UPDATE ... WHERE consumed_at
+// IS NULL statements against the same row must let exactly one succeed.
+// docs/ARCHITECTURE.md §2.2 and the 0001 migration both point at this
+// exact query — this test predates Rotate's real implementation and is
+// kept as the schema-level pin independent of it; Rotate's own
+// concurrency test additionally covers family revocation and the audit
+// event, which this one, by design, does not.
 //
 // Negative control: replacing the WHERE-guarded UPDATE with a SELECT that
 // checks consumed_at and only then issues an unconditional UPDATE — the

@@ -174,11 +174,22 @@ func (e *CrierEmitter) countDrop(reason string) {
 	e.mu.Unlock()
 }
 
-// severityFor maps Outcome onto OTel's severity scale (crier's wire
-// format): a failure is worth a human's attention at a glance in a log
-// viewer sorted by severity; a success is routine.
-func severityFor(o Outcome) (number int, text string) {
-	if o == OutcomeFailure {
+// severityFor maps an event onto OTel's severity scale (crier's wire
+// format): reuse detection (RS-11, and EventCodeReplay — its RS-04
+// sibling, docs/ARCHITECTURE.md §11 step 3) is ERROR regardless of
+// outcome, the level crier's own ingestion "never samples at or above"
+// (ADR-0017) — a severity of merely WARN, the generic failure level
+// every other failed attempt gets, would not earn that guarantee. Any
+// other failure is WARN; a success is routine.
+func severityFor(e Event) (number int, text string) {
+	switch e.Type {
+	case EventRefreshReuse, EventCodeReplay:
+		return 17, "ERROR"
+	case EventLoginAttempt, EventConsentGranted, EventTokenIssued, EventRevocation, EventRateLimited, EventGatewayRejected:
+		// Every other event type falls through to the generic
+		// Outcome-based mapping below.
+	}
+	if e.Outcome == OutcomeFailure {
 		return 13, "WARN"
 	}
 	return 9, "INFO"
@@ -216,7 +227,7 @@ type wireResource struct {
 // cannot put the real bytes into a map[string]string without the caller
 // deliberately calling Value.Bytes() against its own doc comment.
 func toWireRequest(e Event, serviceName string) wireLogsRequest {
-	number, text := severityFor(e.Outcome)
+	number, text := severityFor(e)
 
 	attrs := map[string]any{
 		"schemaVersion": e.SchemaVersion,
