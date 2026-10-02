@@ -115,9 +115,19 @@ type FamilyStore interface {
 	// Revoke sets RevokedAt/RevokedReason idempotently.
 	Revoke(ctx context.Context, familyID, reason string) error
 
-	// RevokeAllForSubject is administrative revocation (RF-06) and, scoped
-	// by the caller to one client's families, consent revocation (RF-13).
+	// RevokeAllForSubject is administrative revocation (RF-06): every
+	// family subject holds, across every client, revoked with reason.
 	RevokeAllForSubject(ctx context.Context, subject, reason string) error
+
+	// RevokeForSubjectAndClient is consent revocation (RF-13): only the
+	// families subject holds under clientID. #38's first real caller of
+	// either revoke-many method needed to know which of the two this
+	// doc comment used to describe as one method ("scoped by the caller
+	// to one client's families") actually meant — it is its own method
+	// now rather than an implicit mode of RevokeAllForSubject, the same
+	// "the first real caller decides" reasoning #37 already applied to
+	// CreateFamily's signature.
+	RevokeForSubjectAndClient(ctx context.Context, subject, clientID, reason string) error
 
 	// Lookup finds the family and token owning hash, for RS-34's binding
 	// checks before Rotate is attempted.

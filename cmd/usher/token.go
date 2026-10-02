@@ -96,7 +96,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client, errCode := h.authenticateClient(r)
+	client, errCode := authenticateClient(h.clients, r)
 	if errCode != "" {
 		if errCode == "invalid_client" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="usher"`)
@@ -295,7 +295,7 @@ func (h *tokenHandler) writeSuccess(w http.ResponseWriter, r *http.Request, acce
 // to the caller, the same ambiguity RS-25 already requires of
 // invalid_grant, applied here to client lookup instead of code
 // consumption.
-func (h *tokenHandler) authenticateClient(r *http.Request) (client identity.Client, errCode string) {
+func authenticateClient(clients []identity.Client, r *http.Request) (client identity.Client, errCode string) {
 	basicID, basicSecret, hasBasic := r.BasicAuth()
 	postSecret := r.PostForm.Get("client_secret")
 	if hasBasic && postSecret != "" {
@@ -308,7 +308,7 @@ func (h *tokenHandler) authenticateClient(r *http.Request) (client identity.Clie
 		clientID, secret = basicID, basicSecret
 	}
 
-	client, ok := lookupClient(h.clients, clientID)
+	client, ok := lookupClient(clients, clientID)
 	if !ok {
 		return identity.Client{}, "invalid_client"
 	}
@@ -318,16 +318,24 @@ func (h *tokenHandler) authenticateClient(r *http.Request) (client identity.Clie
 	return client, ""
 }
 
-// writeError writes RFC 6749 §5.2's fixed error shape with no
-// error_description (RS-25: no internal detail) — every call site in
-// this file passes the same nothing, so the field exists on the wire
+// writeError writes RFC 6749 §5.2's fixed error shape through
+// writeOAuthError — shared with revokeHandler (#38) so /revoke's own
+// client-authentication failures carry exactly the same wire shape
+// /token's do, not a second, independently maintained copy of it.
+func (h *tokenHandler) writeError(w http.ResponseWriter, status int, errCode string) {
+	writeOAuthError(w, h.logger, status, errCode)
+}
+
+// writeOAuthError writes RFC 6749 §5.2's fixed error shape with no
+// error_description (RS-25: no internal detail) — every call site across
+// this package passes the same nothing, so the field exists on the wire
 // type for spec completeness without a parameter here that would always
 // carry one value.
-func (h *tokenHandler) writeError(w http.ResponseWriter, status int, errCode string) {
+func writeOAuthError(w http.ResponseWriter, logger *slog.Logger, status int, errCode string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(tokenErrorBody{Error: errCode}); err != nil {
-		h.logger.Error("token: encode error response", "error", err)
+		logger.Error("oauth: encode error response", "error", err)
 	}
 }
 

@@ -426,6 +426,135 @@ func TestValidateAccessToken_UnknownKIDRejected(t *testing.T) {
 	}
 }
 
+// TestValidateForRevocation_GoldenPath is #38's own done-when for this
+// method: a genuine access token verifies even though no audience is
+// checked at all -- the claim ValidateAccessToken's own golden path
+// requires to match, this one never looks at.
+func TestValidateForRevocation_GoldenPath(t *testing.T) {
+	v, priv := testValidatorAndKey(t)
+	now := time.Now()
+	raw := signRaw(t, jwa.RS256(), priv, testKID, "at+jwt", validAccessClaims(now))
+
+	claims, err := v.ValidateForRevocation(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("ValidateForRevocation: %v", err)
+	}
+	if claims.ClientID != testClientID {
+		t.Errorf("ClientID = %q, want %q", claims.ClientID, testClientID)
+	}
+	if claims.JTI != "jti-1" {
+		t.Errorf("JTI = %q, want %q", claims.JTI, "jti-1")
+	}
+	if !claims.ExpiresAt.Equal(time.Unix(validAccessClaims(now).ExpiresAt, 0)) {
+		t.Errorf("ExpiresAt = %v, want %v", claims.ExpiresAt, time.Unix(validAccessClaims(now).ExpiresAt, 0))
+	}
+}
+
+// TestValidateForRevocation_IgnoresAudienceEntirely is the golden path's
+// own negative space: a token whose aud names nothing ValidateAccessToken
+// would ever accept (an ID-token-shaped aud, the client itself) still
+// verifies here, because this method never asks for one.
+//
+// Negative control: temporarily adding `jwt.WithAudience(testAudience)`
+// unconditionally to verify's opts (the mutation ValidateAccessToken
+// itself relies on) made this test fail on a token whose aud does not
+// name testAudience -- confirming the test would actually catch an
+// audience check accidentally reintroduced here. Verified by hand,
+// restored before committing.
+func TestValidateForRevocation_IgnoresAudienceEntirely(t *testing.T) {
+	v, priv := testValidatorAndKey(t)
+	claims := validAccessClaims(time.Now())
+	claims.Audience = []string{testClientID} // never testAudience
+	raw := signRaw(t, jwa.RS256(), priv, testKID, "at+jwt", claims)
+
+	if _, err := v.ValidateForRevocation(context.Background(), raw); err != nil {
+		t.Fatalf("ValidateForRevocation rejected a token solely for its audience: %v", err)
+	}
+}
+
+// TestValidateForRevocation_TamperedSignatureRejected is RS-06's own
+// point applied to this method: a signature that does not verify is
+// rejected regardless of how plausible the claims inside look.
+func TestValidateForRevocation_TamperedSignatureRejected(t *testing.T) {
+	v, priv := testValidatorAndKey(t)
+	raw := signRaw(t, jwa.RS256(), priv, testKID, "at+jwt", validAccessClaims(time.Now()))
+	tampered := []byte(raw)
+	// Flip a bit well inside the signature segment, the same "not the
+	// final base64url character" reasoning FuzzParseToken's own seed
+	// corpus comment gives below.
+	lastDot := -1
+	for i := len(tampered) - 1; i >= 0; i-- {
+		if tampered[i] == '.' {
+			lastDot = i
+			break
+		}
+	}
+	tampered[lastDot+2] ^= 0x01
+
+	if _, err := v.ValidateForRevocation(context.Background(), string(tampered)); err == nil {
+		t.Fatal("a token with a tampered signature was accepted")
+	}
+}
+
+// TestValidateForRevocation_WrongTypeRejected is RS-08 applied here: an
+// id_token presented to /revoke as if it were an access token is still
+// rejected on typ, even though this method checks no audience at all.
+func TestValidateForRevocation_WrongTypeRejected(t *testing.T) {
+	v, priv := testValidatorAndKey(t)
+	raw := signRaw(t, jwa.RS256(), priv, testKID, "id_token", validAccessClaims(time.Now()))
+
+	if _, err := v.ValidateForRevocation(context.Background(), raw); err == nil {
+		t.Fatal("a token with typ=id_token was accepted by ValidateForRevocation")
+	}
+}
+
+// TestValidateForRevocation_NotAJWSReturnsErrMalformedToken is the shape
+// the /revoke handler's own token-type detection relies on: a refresh
+// token (an opaque high-entropy string, never JWS-shaped) fails here with
+// ErrMalformedToken specifically, which is what tells the handler to try
+// it as a refresh token hash instead of reporting a server error.
+func TestValidateForRevocation_NotAJWSReturnsErrMalformedToken(t *testing.T) {
+	v, _ := testValidatorAndKey(t)
+
+	_, err := v.ValidateForRevocation(context.Background(), "not-a-jwt-at-all-just-an-opaque-refresh-token")
+	if !errors.Is(err, ErrMalformedToken) {
+		t.Errorf("ValidateForRevocation on an opaque string = %v, want ErrMalformedToken", err)
+	}
+}
+
+// TestWithClock_IssuedAndValidatedAgainstTheSameFakeClock is #38's own
+// finding, surfaced by cmd/usher's /revoke handler: a caller that signs
+// and validates within the same process over an injected, non-real
+// clock (as every test fixture in cmd/usher does) needs
+// exp/nbf/iat validation to agree with that same clock, not jwx's own
+// default (the real system clock) -- a token signed far in the "past" of
+// a fake clock whose real wall-clock date has not been reached yet would
+// otherwise always validate as not-yet-valid or already-expired,
+// depending on which side of now the fake clock sits.
+//
+// Negative control: with the `if v.cfg.clock != nil` block removed from
+// verify, this test failed -- the token, valid only against the fake
+// clock (2020, deliberately far from whatever real wall-clock time the
+// test actually runs at), was rejected as expired against jwx's own
+// real-time default. Verified by hand, restored before committing.
+func TestWithClock_IssuedAndValidatedAgainstTheSameFakeClock(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	source := &fakeKeySource{keys: map[string]fakeRegisteredKey{
+		testKID: {pub: priv.Public(), alg: RS256},
+	}}
+	fakeNow := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	v, err := New(source, []Algorithm{RS256}, WithIssuer(testIssuer), WithClockSkew(30*time.Second),
+		WithClock(func() time.Time { return fakeNow }))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	raw := signRaw(t, jwa.RS256(), priv, testKID, "at+jwt", validAccessClaims(fakeNow))
+
+	if _, err := v.ValidateAccessToken(context.Background(), raw, testAudience); err != nil {
+		t.Fatalf("ValidateAccessToken against the same fake clock the token was issued under: %v", err)
+	}
+}
+
 // FuzzParseToken is the issue's own done-when: no malformed input produces
 // an accepted token. The seed corpus deliberately avoids including a
 // pristine, genuinely valid token (which this property would itself

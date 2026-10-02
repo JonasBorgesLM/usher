@@ -5,5 +5,7 @@
 //
 // NewRateLimitStore (RNF-07's eviction check, issue #18) is this package's
 // own scope; each remaining Store implementation arrives with its own
-// feature issue in M2, M4 and M6 (REQUIREMENTS §11).
+// feature issue in M2, M4 and M6 (REQUIREMENTS §11). Denylist (#38) is
+// the last of M4's; its only consumer so far is /revoke's own write side
+// -- the gateway's read side (proxy.NewHandler) is M6.
 package redis

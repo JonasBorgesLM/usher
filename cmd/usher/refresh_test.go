@@ -77,6 +77,10 @@ func (f *fakeFamilyStore) RevokeAllForSubject(context.Context, string, string) e
 	panic("not used by the /token handler")
 }
 
+func (f *fakeFamilyStore) RevokeForSubjectAndClient(context.Context, string, string, string) error {
+	panic("not used by the /token handler")
+}
+
 func (f *fakeFamilyStore) Lookup(_ context.Context, hash [32]byte) (oauth.Family, oauth.RefreshToken, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

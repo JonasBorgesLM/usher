@@ -107,6 +107,10 @@ func (f *fakeFamilyStore) Revoke(_ context.Context, familyID, reason string) err
 	return nil
 }
 
+func (f *fakeFamilyStore) RevokeForSubjectAndClient(context.Context, string, string, string) error {
+	panic("not used by ConsumeCode or RotateRefreshToken")
+}
+
 func (f *fakeFamilyStore) RevokeAllForSubject(context.Context, string, string) error {
 	panic("not used by ConsumeCode or RotateRefreshToken")
 }

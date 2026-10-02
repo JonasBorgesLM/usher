@@ -136,6 +136,9 @@ func (e *erroringFamilyStore) Revoke(context.Context, string, string) error { pa
 func (e *erroringFamilyStore) RevokeAllForSubject(context.Context, string, string) error {
 	panic("not used")
 }
+func (e *erroringFamilyStore) RevokeForSubjectAndClient(context.Context, string, string, string) error {
+	panic("not used")
+}
 func (e *erroringFamilyStore) Lookup(context.Context, [32]byte) (Family, RefreshToken, error) {
 	panic("not used")
 }
