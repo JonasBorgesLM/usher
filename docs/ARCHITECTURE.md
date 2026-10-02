@@ -599,17 +599,30 @@ type Denylist interface {
 	Add(ctx context.Context, jti string, ttl time.Duration) error
 }
 
-// Route is one proxied route's static configuration. Audience is required —
-// a Route without one is a startup error (RS-19, RNF-05).
+// Route is one proxied route's static configuration. Audience is
+// required — ValidateRoute, called by NewHandler itself (#41), refuses a
+// Route without one rather than silently serving requests with the
+// audience check skipped.
 type Route struct {
 	PathPrefix string
 	Upstream   *url.URL
 	Audience   string
-	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42, unused by #40
+	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42, unused by #40/#41
 }
 
-// NewHandler builds the reverse proxy for one Route (#40). It reaches
-// tokens only through validator (pkg/tokenvalidator, constructed over
+// ValidateRoute is RS-19/RNF-05: a Route with no Audience must refuse to
+// start. tokenvalidator.Validator.ValidateAccessToken treats an empty
+// wantAudience as "no audience required" — without this check, an
+// audience-less Route would silently accept a token issued for any
+// other resource server behind the gateway, defeating RS-19's whole
+// point (a token for RS-A refused at RS-B's route).
+func ValidateRoute(route Route) error
+
+// NewHandler builds the reverse proxy for one Route (#40). Panics if
+// route fails ValidateRoute (#41) — "refuses to start," applied directly
+// since nothing yet loads a Route from outside Go code for a
+// startup-time error to attach to instead. It reaches tokens only
+// through validator (pkg/tokenvalidator, constructed over
 // keys.Keyset.AsKeySource — internal/keys, not internal/oauth) and
 // denylist. This is the whole reason ADR-0001's boundary holds by
 // construction: nothing here has a way to reach an oauth.Code or
@@ -618,12 +631,14 @@ type Route struct {
 // Per request: strip every inbound `X-Auth-*` header (RS-17, an
 // allow-list of what survives — nothing, in that namespace, from the
 // client); extract the bearer token and call
-// validator.ValidateAccessToken(ctx, token, route.Audience); on success,
-// consult denylist.Contains(claims.JTI) (RF-06) — an error here denies,
-// the same as "revoked" (RNF-04); only then inject X-Auth-Subject,
-// X-Auth-Client and X-Auth-Scope from the validated claims and forward
-// via httputil.ReverseProxy. Any failure in that sequence is a bare 401,
-// no body — RS-23/RS-25's "no internal detail" extended to the gateway's
+// validator.ValidateAccessToken(ctx, token, route.Audience) — RS-19's
+// own cross-audience rejection, and RS-08's typ check, both already
+// inside that one call; on success, consult
+// denylist.Contains(claims.JTI) (RF-06) — an error here denies, the same
+// as "revoked" (RNF-04); only then inject X-Auth-Subject, X-Auth-Client
+// and X-Auth-Scope from the validated claims and forward via
+// httputil.ReverseProxy. Any failure in that sequence is a bare 401, no
+// body — RS-23/RS-25's "no internal detail" extended to the gateway's
 // own auth failures.
 //
 // The ReverseProxy itself carries RS-20/RS-21: a custom ErrorHandler

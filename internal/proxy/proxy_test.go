@@ -23,11 +23,12 @@ import (
 )
 
 const (
-	testKID      = "test-key"
-	testIssuer   = "https://usher.test"
-	testAudience = "https://rs.example"
-	testClientID = "client-1"
-	testSubject  = "alice"
+	testKID       = "test-key"
+	testIssuer    = "https://usher.test"
+	testAudience  = "https://rs.example"
+	testAudienceB = "https://rs-b.example"
+	testClientID  = "client-1"
+	testSubject   = "alice"
 )
 
 // fakeKeySource is a minimal tokenvalidator.KeySource: this package's own
@@ -75,9 +76,14 @@ type accessClaims struct {
 
 func testAccessToken(t *testing.T, priv *rsa.PrivateKey, jti string, scope []string) string {
 	t.Helper()
+	return testAccessTokenForAudience(t, priv, jti, scope, testAudience)
+}
+
+func testAccessTokenForAudience(t *testing.T, priv *rsa.PrivateKey, jti string, scope []string, audience string) string {
+	t.Helper()
 	now := time.Now()
 	claims := accessClaims{
-		Issuer: testIssuer, Subject: testSubject, Audience: []string{testAudience},
+		Issuer: testIssuer, Subject: testSubject, Audience: []string{audience},
 		ClientID: testClientID, Scope: strings.Join(scope, " "),
 		ExpiresAt: now.Add(5 * time.Minute).Unix(), NotBefore: now.Unix(), IssuedAt: now.Unix(),
 		JTI: jti,
@@ -153,11 +159,16 @@ func capturingUpstream(t *testing.T, status int) (srv *httptest.Server, received
 
 func testRoute(t *testing.T, upstream *httptest.Server) Route {
 	t.Helper()
+	return testRouteWithAudience(t, upstream, testAudience)
+}
+
+func testRouteWithAudience(t *testing.T, upstream *httptest.Server, audience string) Route {
+	t.Helper()
 	u, err := url.Parse(upstream.URL)
 	if err != nil {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
-	return Route{PathPrefix: "/api", Upstream: u, Audience: testAudience}
+	return Route{PathPrefix: "/api", Upstream: u, Audience: audience}
 }
 
 func proxyRequest(authHeader string, extraHeaders map[string]string) *http.Request {
@@ -483,5 +494,99 @@ func TestUpstreamTransport_AllTimeoutsSet(t *testing.T) {
 	}
 	if maxUpstreamResponseBytes <= 0 {
 		t.Error("maxUpstreamResponseBytes is not a positive limit")
+	}
+}
+
+// TestValidateRoute_EmptyAudienceRefused is #41's own second done-when:
+// a route without an audience refuses to start.
+//
+// Negative control: with the `route.Audience == ""` check removed from
+// ValidateRoute, this test failed -- an audience-less route validated
+// successfully. Verified by hand, restored before committing.
+func TestValidateRoute_EmptyAudienceRefused(t *testing.T) {
+	if err := ValidateRoute(Route{PathPrefix: "/api", Audience: ""}); err == nil {
+		t.Fatal("ValidateRoute accepted a route with no audience")
+	}
+	if err := ValidateRoute(Route{PathPrefix: "/api", Audience: testAudience}); err != nil {
+		t.Errorf("ValidateRoute rejected a route with a real audience: %v", err)
+	}
+}
+
+// TestNewHandler_PanicsOnRouteWithoutAudience is the same property
+// applied where it actually bites: NewHandler itself refuses to build a
+// handler for a Route with no audience, rather than silently serving
+// requests with the audience check skipped.
+//
+// Negative control: with the `ValidateRoute(route)` call removed from
+// NewHandler, this test failed -- NewHandler returned a handler instead
+// of panicking. Verified by hand, restored before committing.
+func TestNewHandler_PanicsOnRouteWithoutAudience(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+	route := Route{PathPrefix: "/api", Upstream: mustParseURL(t, upstream.URL), Audience: ""}
+
+	defer func() {
+		if recover() == nil {
+			t.Error("NewHandler did not panic on a route with no audience")
+		}
+	}()
+	NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse URL %q: %v", raw, err)
+	}
+	return u
+}
+
+// TestNewHandler_CrossAudienceTokenRefused is #41's own first done-when:
+// a token issued for one resource server's audience is refused at a
+// different route whose own audience names a different resource
+// server, even though the token's signature, issuer and every other
+// claim are genuinely valid.
+func TestNewHandler_CrossAudienceTokenRefused(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstreamB, receivedB := capturingUpstream(t, http.StatusOK)
+	routeB := testRouteWithAudience(t, upstreamB, testAudienceB)
+	handler := NewHandler(routeB, testValidator(t, priv), newFakeDenylist(), nil)
+
+	// Signed for RS-A's audience, presented at RS-B's own route.
+	tokenForA := testAccessTokenForAudience(t, priv, "jti-cross", []string{"openid"}, testAudience)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+tokenForA, nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d (a token for a different resource server's audience)", rec.Code, http.StatusUnauthorized)
+	}
+	if receivedB() != nil {
+		t.Error("RS-B's upstream was called with a token issued for RS-A's audience")
+	}
+}
+
+// TestNewHandler_WithoutAudienceCheckCrossAudienceTokenWouldBeAccepted
+// is why TestValidateRoute_EmptyAudienceRefused and
+// TestNewHandler_PanicsOnRouteWithoutAudience matter, made concrete:
+// tokenvalidator.ValidateAccessToken treats an empty wantAudience as "no
+// audience required," so a route that reached production with no
+// audience at all -- which ValidateRoute and NewHandler's own panic
+// exist specifically to make unreachable -- would accept the exact
+// cross-RS token TestNewHandler_CrossAudienceTokenRefused proves is
+// otherwise refused.
+//
+// This does not mutate production code: it drives the same
+// *tokenvalidator.Validator the real pipeline uses directly, with the
+// same empty-audience shape NewHandler's panic prevents from ever
+// reaching it, to demonstrate the failure mode those guards close
+// rather than merely assert that they exist.
+func TestNewHandler_WithoutAudienceCheckCrossAudienceTokenWouldBeAccepted(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	validator := testValidator(t, priv)
+	tokenForA := testAccessTokenForAudience(t, priv, "jti-cross-2", []string{"openid"}, testAudience)
+
+	if _, err := validator.ValidateAccessToken(context.Background(), tokenForA, ""); err != nil {
+		t.Fatalf("a token valid for RS-A, checked with no required audience, was rejected: %v -- this was meant to demonstrate acceptance, not refusal", err)
 	}
 }
