@@ -10,6 +10,7 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -36,14 +37,28 @@ type Denylist interface {
 	Add(ctx context.Context, jti string, ttl time.Duration) error
 }
 
-// Route is one proxied route's static configuration. Audience is required —
-// a Route without one is a startup error (RS-19, RNF-05), enforced by
-// internal/config's loader, not by this type.
+// Route is one proxied route's static configuration. Audience is required
+// — ValidateRoute, called by NewHandler itself (#41), refuses a Route
+// without one rather than silently serving requests for it.
 type Route struct {
 	PathPrefix string
 	Upstream   *url.URL
 	Audience   string
-	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42; this issue (#40) does not call it yet
+	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42; this issue does not call it yet
+}
+
+// ValidateRoute is RS-19/RNF-05: a proxied route with no Audience must
+// refuse to start, not serve requests with the audience check silently
+// skipped. tokenvalidator.Validator.ValidateAccessToken treats an empty
+// wantAudience as "no audience required" — an audience-less Route would
+// make NewHandler accept a token issued for any resource server behind
+// this gateway, defeating RS-19's whole point (a token for RS-A refused
+// at RS-B's route) rather than merely weakening it.
+func ValidateRoute(route Route) error {
+	if route.Audience == "" {
+		return fmt.Errorf("proxy: route %q has no audience (RS-19)", route.PathPrefix)
+	}
+	return nil
 }
 
 // identityHeaderPrefix is RI-04's own namespace. RS-17 requires removing
@@ -152,7 +167,15 @@ func unauthorized(w http.ResponseWriter) {
 // A nil logger discards — this package does not import cmd/usher, so it
 // cannot reuse discardLogger there, but the contract is the same one
 // every handler in that package already follows.
+//
+// Panics if route fails ValidateRoute (RS-19, RNF-05) — the same
+// "refuses to start" this package's own doc comment promises, applied
+// here directly since nothing yet loads a Route from outside Go code
+// for a startup-time error to attach to instead.
 func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist, logger *slog.Logger) http.Handler {
+	if err := ValidateRoute(route); err != nil {
+		panic(err)
+	}
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
