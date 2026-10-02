@@ -166,3 +166,27 @@ func TestServe_CloserErrorDoesNotStopOthers(t *testing.T) {
 		t.Errorf("closed = %v, want the second closer to still run after the first failed", closed)
 	}
 }
+
+// TestNewServer_AllTimeoutsSet is RS-21's server half of #40's own third
+// done-when ("server and upstream timeouts all set"). The upstream half
+// is internal/proxy's own TestUpstreamTransport_AllTimeoutsSet.
+//
+// Negative control: with `ReadHeaderTimeout` temporarily zeroed in
+// newServer, this test failed. Verified by hand for each of the four
+// fields in turn, restored before committing.
+func TestNewServer_AllTimeoutsSet(t *testing.T) {
+	srv := newServer(http.NewServeMux())
+
+	if srv.ReadHeaderTimeout == 0 {
+		t.Error("ReadHeaderTimeout is unset")
+	}
+	if srv.ReadTimeout == 0 {
+		t.Error("ReadTimeout is unset")
+	}
+	if srv.WriteTimeout == 0 {
+		t.Error("WriteTimeout is unset")
+	}
+	if srv.IdleTimeout == 0 {
+		t.Error("IdleTimeout is unset")
+	}
+}
