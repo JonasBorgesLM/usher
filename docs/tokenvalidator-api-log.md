@@ -98,3 +98,42 @@ decision. `jws.Verify`'s own documented default (reject whenever the header's
 layer underneath this — confirmed by testing, not assumed: see
 `TestValidateAccessToken_AlgNoneRejected`'s own comment in
 `pkg/tokenvalidator/tokenvalidator_test.go` for where that surfaced.
+
+---
+
+## M3 — Key rotation and JWKS (issue #34)
+
+**Consumer driving this entry:** none yet, same honest answer as M2's row —
+`JWKSSource` is this package's own extractability candidate for a consumer
+that does not exist until M6. What drove the two new error vars is, again,
+this issue's own test suite needing to tell a rate-limit refusal (no fetch
+even attempted) apart from a confirmed-absent kid (fetched, still not
+found) — the two have different operational meanings for whoever logs them,
+even though both are failures a resource server treats identically (401).
+
+**Exported surface, changed from M2:**
+
+```
+// New — two error vars, one per JWKSSource.Key failure category.
+var ErrUnknownKID error        // no key in the most recently fetched JWKS matches this kid
+var ErrRefetchRateLimited error // this source's rate-limited refetch budget is exhausted
+```
+
+`JWKSSource` and `NewJWKSSource`'s own signatures are unchanged from M0;
+`JWKSSource.Key`'s signature is also unchanged — only its body went from a
+panic to a real implementation, the same shape `ValidateAccessToken`'s own
+M2 entry took.
+
+**What the implementation does, since the signature alone doesn't say it:**
+a cache hit never reaches the network. A miss spends one attempt against a
+`moat/ratelimit` token bucket (`refetchLimit` per `refetchWindow`, keyed by
+a single constant — keying by `kid` would hand an attacker a fresh bucket
+per forged value, defeating the limit RS-09/T-15 exist for) before
+attempting a fetch; refused attempts return `ErrRefetchRateLimited` without
+ever calling out. There is deliberately no separate, time-based cache
+refresh in this phase: the cache is replaced only by a fetch a miss
+triggered, which is what lets a newly published key be picked up without a
+restart — and also means an already-cached kid is served from it
+indefinitely until some unrelated miss happens to trigger a refetch that
+drops it. That gap is RS-09's own already-documented residual, not a new
+one.
