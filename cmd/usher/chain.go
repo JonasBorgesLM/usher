@@ -82,6 +82,17 @@ var authorizeGroup = routeGroup{name: "authorize", csrf: false, noStore: false}
 // rather than hiding it.
 var tokenGroup = routeGroup{name: "token", csrf: false, noStore: true}
 
+// jwksGroup is REQUIREMENTS §7.2's "/.well-known/*, JWKS" row: no CSRF, no
+// auth, and -- deliberately the opposite of every credential route above --
+// no-store does not apply. A public key set is not a credential; the whole
+// point of #33's own Cache-Control wiring is that this response is cacheable,
+// which RS-26's no-store would directly contradict. The table's "permissive,
+// cached" rate limit is left unwired for the same reason tokenGroup's own
+// comment already gives for /token: no RS-/RF- id for it is cited by this
+// issue, and a cacheable response needs a rate limiter least of all the
+// routes in this table.
+var jwksGroup = routeGroup{name: "jwks", csrf: false, noStore: false}
+
 // wrap composes h under g's chain, around limiter's IP axis and protector's
 // CSRF check — ratelimit, then validate.MaxBodyBytes, then csrf if the group
 // carries it, then no-store if the group carries it, innermost to outermost

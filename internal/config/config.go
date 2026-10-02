@@ -35,18 +35,19 @@ type Config struct {
 	// OIDC discovery's own convention for the issuer identifier.
 	Issuer string
 
-	// The seven lifetimes REQUIREMENTS RF-12 bounds. Each has a default used
+	// The eight lifetimes REQUIREMENTS RF-12 bounds. Each has a default used
 	// when its environment variable is unset, and an upper bound a
 	// configured value may not exceed — see lifetimeBounds below, which is
 	// both this file's source of truth and the table its own tests iterate,
 	// so a bound changed in one place cannot silently drift from the other.
-	AuthCodeTTL        time.Duration // RS-04
-	ChallengeTTL       time.Duration // RS-05
-	AccessTokenTTL     time.Duration // RF-06's gateway-local revocation bound
-	RefreshIdleTTL     time.Duration
-	RefreshAbsoluteTTL time.Duration
-	SessionIdleTTL     time.Duration // RS-31
-	SessionAbsoluteTTL time.Duration // RS-31
+	AuthCodeTTL          time.Duration // RS-04
+	ChallengeTTL         time.Duration // RS-05
+	AccessTokenTTL       time.Duration // RF-06's gateway-local revocation bound
+	RefreshIdleTTL       time.Duration
+	RefreshAbsoluteTTL   time.Duration
+	SessionIdleTTL       time.Duration // RS-31
+	SessionAbsoluteTTL   time.Duration // RS-31
+	ConsumerJWKSCacheTTL time.Duration // RS-09's formula; also /.well-known/jwks.json's own Cache-Control max-age (#33)
 
 	// TrustedProxyCIDRs and DirectlyExposed are ADR-0010's inbound trust
 	// decision — who fronts usher itself, for the IP axis of RS-22 (and any
@@ -107,6 +108,11 @@ var lifetimeBounds = []lifetimeBound{
 		name: "browser session absolute TTL", env: "USHER_SESSION_ABSOLUTE_TTL",
 		def: 12 * time.Hour, max: 24 * time.Hour,
 		assign: func(c *Config, d time.Duration) { c.SessionAbsoluteTTL = d },
+	},
+	{
+		name: "consumer JWKS cache TTL", env: "USHER_CONSUMER_JWKS_CACHE_TTL",
+		def: 10 * time.Minute, max: time.Hour,
+		assign: func(c *Config, d time.Duration) { c.ConsumerJWKSCacheTTL = d },
 	},
 }
 
