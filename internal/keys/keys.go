@@ -114,6 +114,20 @@ type Denylist []string
 // Keyset is the loaded, validated set of keys, sorted by SignFrom.
 type Keyset struct {
 	keys []Key
+	now  func() time.Time
+}
+
+// LoadOption configures a Keyset at Load.
+type LoadOption func(*Keyset)
+
+// WithClock overrides the clock AsKeySource's adapter reads (ADR-0015:
+// "every instance derives... the active signing key from the keyset and
+// the clock alone"). Signing and Published already take their own t
+// parameter for exactly this testability; AsKeySource's Key method talks
+// to a tokenvalidator.KeySource caller who supplies no such parameter, so
+// the clock it reads has to live here instead. Defaults to time.Now.
+func WithClock(now func() time.Time) LoadOption {
+	return func(k *Keyset) { k.now = now }
 }
 
 // keyMetadata is one key's on-disk schedule: "<kid>.json" next to
@@ -140,7 +154,7 @@ var ErrEmptyKeyset = errors.New("keys: no usable signing keys in the keyset")
 // and the window that failed. Called once at startup (ADR-0015: no
 // periodic re-read; rotation is a restart that picks up a key already
 // installed with a future SignFrom).
-func Load(dir string, clockSkew, maxAccessTokenTTL, consumerJWKSCacheTTL time.Duration, deny Denylist) (*Keyset, error) {
+func Load(dir string, clockSkew, maxAccessTokenTTL, consumerJWKSCacheTTL time.Duration, deny Denylist, opts ...LoadOption) (*Keyset, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("keys: read keyset directory %q: %w", dir, err)
@@ -206,7 +220,11 @@ func Load(dir string, clockSkew, maxAccessTokenTTL, consumerJWKSCacheTTL time.Du
 		}
 	}
 
-	return &Keyset{keys: all}, nil
+	ks := &Keyset{keys: all, now: time.Now}
+	for _, opt := range opts {
+		opt(ks)
+	}
+	return ks, nil
 }
 
 // loadOneKey reads one "<kid>.json" + "<kid>.pem" pair. dir is operator
@@ -365,7 +383,7 @@ func (k *Keyset) AsKeySource() tokenvalidator.KeySource {
 // keys currently published — the same set JWKS(now) would render, so an
 // in-process validator and an external one resolve a kid identically.
 func (s *keySource) Key(_ context.Context, kid string) (crypto.PublicKey, tokenvalidator.Algorithm, error) {
-	for _, key := range s.keyset.Published(time.Now()) {
+	for _, key := range s.keyset.Published(s.keyset.now()) {
 		if key.KID == kid {
 			return key.Private.Public(), key.Algorithm, nil
 		}
