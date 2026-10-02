@@ -771,3 +771,50 @@ left for implementation to discover:
   necessarily a second call. §2.1 and Flow 2 step 7 state the resulting
   window plainly rather than implying `CodeStore` gives RS-04 the same
   one-operation guarantee RS-11 gets.
+
+---
+
+## 15. `internal/rbac` — permission evaluation (RF-05, #39)
+
+```go
+package rbac
+
+// Permissions maps a role name to its own fixed set of permissions —
+// RF-05's other half, the one that depends on who the user is rather
+// than what the client asked for. Static, versioned configuration, the
+// same shape identity.Client's own Scopes field already is for RF-01.
+type Permissions map[string][]string
+
+// Authorizer evaluates RF-05 against one Permissions vocabulary.
+type Authorizer struct{ /* ... */ }
+
+func New(roles Permissions) *Authorizer
+
+// Allowed is RF-05 itself: permission is granted only when it appears in
+// BOTH scope and role's own permission set — never from either alone.
+func (a *Authorizer) Allowed(permission string, scope []string, role string) bool
+
+// RequirePermission is REQUIREMENTS §8's own Decorator example:
+// RequirePermission("task:write")(handler). A denied request gets 403,
+// empty body — no detail about which half of the intersection failed.
+func (a *Authorizer) RequirePermission(permission string) func(http.Handler) http.Handler
+
+// WithScope/ScopeFrom and WithRole/RoleFrom are the one seam this
+// package depends on: a context.Context carrying the authenticated
+// request's own granted scope and role, set by whatever validates the
+// bearer token before RequirePermission's handler runs. This package
+// has no opinion on how that happens — ADR-0006's own [auth] → [rbac]
+// chain order is internal/proxy's job, M6, not yet built; these two
+// functions are what lets RequirePermission be fully testable (a table
+// over scope/role combinations) without that chain existing yet.
+func WithScope(ctx context.Context, scope []string) context.Context
+func ScopeFrom(ctx context.Context) []string
+func WithRole(ctx context.Context, role string) context.Context
+func RoleFrom(ctx context.Context) string
+```
+
+The role vocabulary itself (which permission strings exist, which roles
+hold which) is deliberately not this package's decision — `cmd/seed`'s
+own `seedRoles` already calls `"admin"` and `"user"` provisional
+placeholders for exactly that reason. Whoever constructs the `Authorizer`
+(M6's gateway wiring) supplies the real `Permissions` map.
