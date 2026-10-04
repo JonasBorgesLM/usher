@@ -13,12 +13,14 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jws"
 
+	"github.com/JonasBorgesLM/bastion"
 	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
 
@@ -588,5 +590,124 @@ func TestNewHandler_WithoutAudienceCheckCrossAudienceTokenWouldBeAccepted(t *tes
 
 	if _, err := validator.ValidateAccessToken(context.Background(), tokenForA, ""); err != nil {
 		t.Fatalf("a token valid for RS-A, checked with no required audience, was rejected: %v -- this was meant to demonstrate acceptance, not refusal", err)
+	}
+}
+
+// TestNewHandler_OpenCircuitReturns503WithRetryAfter is ADR-0016's own
+// rule 1 and #42's first done-when: an open circuit refuses the call
+// without ever reaching the upstream, and responds 503 with
+// Retry-After, never the bare 502 a genuine upstream failure gets (RNF-04:
+// a breaker rejection is a handled, not a hidden, denial).
+//
+// Negative control: with the `errors.Is(err, bastion.ErrOpenState) ||
+// ...` branch removed from NewHandler's ErrorHandler (falling through
+// to gatewayErrorHandler unconditionally), this test failed -- status
+// was 502, with no Retry-After header at all. Verified by hand,
+// restored before committing.
+func TestNewHandler_OpenCircuitReturns503WithRetryAfter(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+
+	breaker, err := bastion.New("test-upstream-open")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	breaker.Trip(context.Background())
+
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+
+	token := testAccessToken(t, priv, "jti-breaker-open", []string{"openid"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code == http.StatusInternalServerError {
+		t.Fatal("status = 500, want anything but -- ADR-0016 rule 1 forbids it specifically")
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := rec.Header().Get("Retry-After"); got == "" {
+		t.Error("Retry-After header is missing")
+	}
+	if received() != nil {
+		t.Error("the upstream was called despite an open circuit")
+	}
+}
+
+// TestNewHandler_BreakerRejectionDoesNotRetryOutboundCall is ADR-0016's
+// own rule 2 at its actual source: bastion.Execute is attempted at most
+// once per incoming request. This is what makes "the rate limiter runs
+// once, on the way in" hold regardless of what wraps this handler --
+// outer middleware (REQUIREMENTS §7.2's own rate limiter among it) runs
+// exactly once per incoming HTTP request by net/http's own dispatch, and
+// nothing inside this handler calls back into the breaker a second time
+// for one request.
+func TestNewHandler_BreakerRejectionDoesNotRetryOutboundCall(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+
+	var rejects int32
+	breaker, err := bastion.New("test-upstream-norety", bastion.WithHooks(bastion.Hooks{
+		OnReject: func(context.Context, bastion.RejectEvent) { atomic.AddInt32(&rejects, 1) },
+	}))
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	breaker.Trip(context.Background())
+
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+
+	token := testAccessToken(t, priv, "jti-breaker-noretry", []string{"openid"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if got := atomic.LoadInt32(&rejects); got != 1 {
+		t.Errorf("breaker OnReject fired %d times for one incoming request, want exactly 1", got)
+	}
+	if received() != nil {
+		t.Error("the upstream was called despite an open circuit")
+	}
+}
+
+// TestNewHandler_BreakerRejectionLeavesOuterLimiterChargedOnce is #42's
+// own second done-when, literally: a counting fake standing in for
+// moat/ratelimit.Limiter's own middleware (REQUIREMENTS §7.2's outer
+// rate-limit layer), wrapped around NewHandler's result exactly as the
+// real chain would. One incoming request, breaker open, must charge
+// that outer layer exactly once -- never zero (bypassed) and never more
+// than one (re-entered by something inside the handler).
+func TestNewHandler_BreakerRejectionLeavesOuterLimiterChargedOnce(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+
+	breaker, err := bastion.New("test-upstream-limiter")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	breaker.Trip(context.Background())
+
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+
+	var limiterCalls int32
+	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&limiterCalls, 1)
+		handler.ServeHTTP(w, r)
+	})
+
+	token := testAccessToken(t, priv, "jti-breaker-limiter", []string{"openid"})
+	rec := httptest.NewRecorder()
+	outer.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if got := atomic.LoadInt32(&limiterCalls); got != 1 {
+		t.Errorf("the outer rate-limiter stand-in was invoked %d times for one incoming request, want exactly 1 -- a breaker rejection must never re-enter it", got)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
