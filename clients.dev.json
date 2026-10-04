@@ -1,0 +1,12 @@
+[
+  {
+    "client_id": "demo-client",
+    "confidential": true,
+    "secret_hash": "707a5b14684f86c28fc242b4929c6f65de024f4549bdc5363752f659ce707abd",
+    "redirect_uris": ["http://localhost:9999/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "scopes": ["openid", "profile", "offline_access"],
+    "audiences": ["https://resource-server.usher.local"],
+    "require_consent": true
+  }
+]

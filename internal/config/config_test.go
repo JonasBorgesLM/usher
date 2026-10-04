@@ -18,12 +18,19 @@ func mapGetenv(env map[string]string) Getenv {
 // validEnv is a complete, in-bounds environment every test starts from and
 // mutates one key at a time — so a failing case is attributable to the one
 // thing it changed, not to an incidentally-also-broken baseline.
+// testCSRFSecretHex is 32 random bytes, hex-encoded -- a fixed test
+// placeholder (#nosec G101), long enough to satisfy csrf.MinSecretLen.
+const testCSRFSecretHex = "7624fe19b0cddddd511df7e8def3c87f2fafa9f288b231a5b05dd10b13abe858" // #nosec G101 -- fixed test placeholder, not a real credential
+
 func validEnv() map[string]string {
 	return map[string]string{ // #nosec G101 -- fixed test placeholder, not a real credential
 		"USHER_DATABASE_URL":     "postgres://usher:usher@localhost:5432/usher",
 		"USHER_REDIS_ADDR":       "localhost:6379",
 		"USHER_ISSUER":           "https://usher.example.test",
 		"USHER_DIRECTLY_EXPOSED": "true",
+		"USHER_CSRF_SECRET":      testCSRFSecretHex,
+		"USHER_CLIENTS_PATH":     "/etc/usher/clients.json",
+		"USHER_KEYS_DIR":         "/etc/usher/keys",
 	}
 }
 
@@ -55,7 +62,7 @@ func TestLoad_DefaultsApplyWhenLifetimesUnset(t *testing.T) {
 // rather than one hand-picked case, so adding a third required field without
 // a matching test case here is a gap this test would otherwise hide.
 func TestLoad_MissingRequiredField(t *testing.T) {
-	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR", "USHER_ISSUER"} {
+	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR", "USHER_ISSUER", "USHER_CSRF_SECRET", "USHER_CLIENTS_PATH", "USHER_KEYS_DIR"} {
 		t.Run(key, func(t *testing.T) {
 			env := validEnv()
 			delete(env, key)
@@ -204,6 +211,94 @@ func TestLoad_MalformedDurationFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "USHER_ACCESS_TOKEN_TTL") {
 		t.Errorf("error %q does not name the offending variable", err)
+	}
+}
+
+// TestLoad_CSRFSecretMustDecodeToAtLeastMinSecretLen is RS-12a's own
+// prerequisite: moat/csrf.New refuses a key shorter than MinSecretLen,
+// and refusing it here, at startup, is RNF-05's "fails closed" applied
+// before ever reaching that constructor.
+//
+// Negative control: with the `len(csrfSecretBytes) < csrf.MinSecretLen`
+// check removed from Load, this test failed -- a 1-byte secret loaded
+// successfully. Verified by hand, restored before committing.
+func TestLoad_CSRFSecretMustDecodeToAtLeastMinSecretLen(t *testing.T) {
+	env := validEnv()
+	env["USHER_CSRF_SECRET"] = "ab" // one byte, hex-encoded
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with a 1-byte CSRF secret; want an error")
+	}
+}
+
+func TestLoad_CSRFSecretMustBeValidHex(t *testing.T) {
+	env := validEnv()
+	env["USHER_CSRF_SECRET"] = "not-hex-at-all"
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with a non-hex CSRF secret; want an error")
+	}
+}
+
+// TestLoad_HashConcurrencyDefaultAndOverride is RS-33's own three numbers,
+// confirmed to have sane defaults and to be overridable.
+func TestLoad_HashConcurrencyDefaultAndOverride(t *testing.T) {
+	cfg, err := Load(mapGetenv(validEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HashConcurrency <= 0 {
+		t.Errorf("HashConcurrency default = %d, want > 0", cfg.HashConcurrency)
+	}
+	if cfg.HashWait <= 0 {
+		t.Errorf("HashWait default = %s, want > 0", cfg.HashWait)
+	}
+	if cfg.HashMemoryCeilingKiB == 0 {
+		t.Errorf("HashMemoryCeilingKiB default = %d, want > 0", cfg.HashMemoryCeilingKiB)
+	}
+
+	env := validEnv()
+	env["USHER_HASH_CONCURRENCY"] = "16"
+	cfg, err = Load(mapGetenv(env))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.HashConcurrency != 16 {
+		t.Errorf("HashConcurrency = %d, want 16", cfg.HashConcurrency)
+	}
+}
+
+func TestLoad_HashConcurrencyMustBePositive(t *testing.T) {
+	env := validEnv()
+	env["USHER_HASH_CONCURRENCY"] = "0"
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with USHER_HASH_CONCURRENCY=0; want an error")
+	}
+}
+
+// TestLoad_CrierTokenRequiredWhenCrierURLSet is RI-03 applied at
+// startup: a half-configured crier integration (a URL with no
+// credential, or vice versa) fails closed rather than sending
+// unauthenticated requests or silently running without one.
+//
+// Negative control: with the `cfg.CrierServiceName`/`cfg.CrierToken`
+// requiredness checks removed from Load's `if cfg.CrierURL != ""`
+// branch, this test failed -- Load succeeded with USHER_CRIER_URL set
+// and neither companion variable present. Verified by hand, restored
+// before committing.
+func TestLoad_CrierTokenRequiredWhenCrierURLSet(t *testing.T) {
+	env := validEnv()
+	env["USHER_CRIER_URL"] = "https://crier.example.test"
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with USHER_CRIER_URL set but neither USHER_CRIER_SERVICE_NAME nor USHER_CRIER_TOKEN; want an error")
+	}
+}
+
+func TestLoad_CrierUnsetByDefault(t *testing.T) {
+	cfg, err := Load(mapGetenv(validEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.CrierURL != "" {
+		t.Errorf("CrierURL = %q, want empty when unset", cfg.CrierURL)
 	}
 }
 

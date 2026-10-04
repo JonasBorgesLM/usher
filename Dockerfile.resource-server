@@ -1,0 +1,19 @@
+# Builds cmd/resource-server for the local docker-compose stack (RNF-06,
+# RI-05). Same shape as Dockerfile.usher, and the same reason it stays
+# this small: ADR-0013 keeps this binary a demo, not a product.
+FROM golang:1.26.6-alpine AS build
+
+ENV GOEXPERIMENT=jsonv2
+ENV CGO_ENABLED=0
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /out/resource-server ./cmd/resource-server
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/resource-server /usr/local/bin/resource-server
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/resource-server"]

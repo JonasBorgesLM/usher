@@ -1,17 +1,17 @@
-# Local development stack (RNF-06). `docker compose up` brings up the
-# infrastructure usher needs — Postgres and Redis — under the constraints
-# RNF-07 and ADR-0010 put on them, both verifiable from the host once it is
-# running:
+# Local development stack (RNF-06). `docker compose up` brings up
+# Postgres, Redis, usher and the demo resource server, under the
+# constraints RNF-07 and ADR-0010 put on them -- both verifiable from
+# the host once it is running:
 #
 #   docker compose exec redis redis-cli -a "$REDIS_PASSWORD" --no-auth-warning CONFIG GET maxmemory-policy
 #   docker compose exec postgres pg_isready -U "${POSTGRES_USER:-usher}"
 #
-# usher and the demo resource server are not compose services yet: cmd/usher
-# and cmd/resource-server (built in #7) print "not implemented" and exit 1, so
-# adding them here now would just show two crash-looping containers next to
-# two healthy ones. They join this file once M2 (usher) and M6
-# (resource-server) give them something to do — at the static addresses
-# ADR-0010's amendment already reserves in the network below.
+# genkeys (#43) runs once, generates a dev-only signing keyset into the
+# usher-keys volume if one is not already there, and exits; usher does
+# not start until it has (and until Postgres and Redis report healthy).
+# There is no seeded user yet -- run `go run ./cmd/seed` against this
+# same USHER_DATABASE_URL once the stack is up, the same manual step
+# this project has always needed, compose or not.
 name: usher
 
 services:
@@ -61,6 +61,94 @@ services:
       timeout: 3s
       retries: 10
 
+  # genkeys (#43) is a one-shot init step: ADR-0015 makes signing keys a
+  # mounted directory an operator action populates, never the repository
+  # and never usher generating its own key material at runtime. It shares
+  # usher's own full configuration (config.Load has no partial mode) but
+  # only ever reads KeysDir from it.
+  genkeys:
+    build:
+      context: .
+      dockerfile: Dockerfile.usher
+      target: build
+    entrypoint: ["go", "run", "./cmd/genkeys"]
+    working_dir: /src
+    environment:
+      USHER_DATABASE_URL: postgres://${POSTGRES_USER:-usher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-usher}
+      USHER_REDIS_ADDR: redis:6379
+      USHER_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      USHER_ISSUER: ${USHER_ISSUER:-http://localhost:8080}
+      USHER_DIRECTLY_EXPOSED: "true"
+      USHER_CSRF_SECRET: ${USHER_CSRF_SECRET:?set USHER_CSRF_SECRET in .env — see .env.example}
+      USHER_CLIENTS_PATH: /etc/usher/clients.json
+      USHER_KEYS_DIR: /keys
+    volumes:
+      - usher-keys:/keys
+      - ./clients.dev.json:/etc/usher/clients.json:ro
+    networks:
+      usher:
+
+  usher:
+    build:
+      context: .
+      dockerfile: Dockerfile.usher
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      USHER_ADDR: ":8080"
+      USHER_DATABASE_URL: postgres://${POSTGRES_USER:-usher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-usher}
+      USHER_REDIS_ADDR: redis:6379
+      USHER_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      USHER_ISSUER: ${USHER_ISSUER:-http://localhost:8080}
+      USHER_DIRECTLY_EXPOSED: "true"
+      USHER_CSRF_SECRET: ${USHER_CSRF_SECRET:?set USHER_CSRF_SECRET in .env — see .env.example}
+      USHER_CLIENTS_PATH: /etc/usher/clients.json
+      USHER_KEYS_DIR: /keys
+    volumes:
+      - usher-keys:/keys:ro
+      - ./clients.dev.json:/etc/usher/clients.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      genkeys:
+        condition: service_completed_successfully
+    networks:
+      usher:
+        ipv4_address: 172.28.0.10 # ADR-0010's amendment: the one address resource-server trusts
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  resource-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.resource-server
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      RESOURCE_SERVER_ADDR: ":8081"
+      RESOURCE_SERVER_JWKS_URL: http://usher:8080/.well-known/jwks.json
+      RESOURCE_SERVER_ISSUER: ${USHER_ISSUER:-http://localhost:8080}
+      RESOURCE_SERVER_AUDIENCE: https://resource-server.usher.local
+      # ADR-0010: the gateway's own pinned address, not the whole subnet --
+      # trusting one address is a tighter boundary than trusting the /24
+      # everything else on this network also sits in.
+      RESOURCE_SERVER_TRUSTED_PROXY_CIDRS: 172.28.0.10/32
+    depends_on:
+      usher:
+        condition: service_healthy
+    networks:
+      usher:
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 networks:
   # Fixed rather than Compose's dynamic default, so the gateway's realip
   # trust configuration (ADR-0010) can name a concrete range instead of
@@ -74,3 +162,4 @@ networks:
 volumes:
   postgres-data:
   redis-data:
+  usher-keys:

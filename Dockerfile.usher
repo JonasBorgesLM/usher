@@ -1,0 +1,25 @@
+# Builds cmd/usher for the local docker-compose stack (RNF-06). Not a
+# production image: no distroless/scratch hardening, no multi-arch
+# manifest -- this project is a study of the protocol, not of container
+# packaging, and a second kind of polish here would be scope the rest of
+# this repository deliberately refuses elsewhere (ADR-0013's own "must
+# stay small" applied to the Dockerfile instead of the demo service).
+FROM golang:1.26.6-alpine AS build
+
+# GOEXPERIMENT=jsonv2 is required to build anything reaching internal/keys
+# (jwx/v4/jwk imports encoding/json/v2) -- CLAUDE.md and every CI job in
+# this repository set it for the same reason.
+ENV GOEXPERIMENT=jsonv2
+ENV CGO_ENABLED=0
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN go build -o /out/usher ./cmd/usher
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/usher /usr/local/bin/usher
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/usher"]
