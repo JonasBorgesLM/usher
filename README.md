@@ -99,8 +99,18 @@ mode where a stolen token starts working.
 - **Postgres 16+.**
 
 ```bash
+cp .env.example .env   # fill in POSTGRES_PASSWORD, REDIS_PASSWORD, USHER_CSRF_SECRET
 docker compose up      # usher, Postgres, Redis, demo resource server
+go run ./cmd/seed      # one admin and one user to log in as (REQUIREMENTS §1.1: no registration UI)
 ```
+
+`clients.dev.json` registers one client for local use, `demo-client`, confidential
+with the dev-only secret `demo-client-secret-dev-only` — never a real credential,
+the same spirit as `cmd/seed`'s own fixed password. `docker compose up` alone
+brings up all four containers healthy; it does not by itself drive a token
+through `/authorize` → login → consent → `/token` → the demo resource server —
+that is `cmd/usher`'s own router, exercised manually or by a future `warden`/
+`sapper` run (RI-06), not something this command does for you.
 
 ## Testing
 

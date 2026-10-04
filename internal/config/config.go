@@ -12,6 +12,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -20,8 +21,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
 	"github.com/JonasBorgesLM/moat/realip"
+	"github.com/JonasBorgesLM/moat/secret"
 )
 
 // Config is every operational setting Load produces.
@@ -56,6 +59,55 @@ type Config struct {
 	// the same shape moat's own preset.Config refuses for the same reason.
 	TrustedProxyCIDRs []string
 	DirectlyExposed   bool
+
+	// RedisPassword authenticates to Redis (`--requirepass`, RNF-07's own
+	// compose service sets one). Optional: "" is a valid Redis deployment
+	// with no AUTH configured, not a misconfiguration this package can
+	// detect from here.
+	RedisPassword string
+
+	// ListenAddr is the address cmd/usher's own http.Server binds (RNF-10).
+	ListenAddr string
+
+	// CSRFSecret is RS-12a's own signing key (moat/csrf.New), loaded once
+	// at startup and held stable across restarts — regenerating it per
+	// process would reject every token a previous process issued
+	// (moat/csrf's own New doc comment). Hex-encoded on the wire, at least
+	// csrf.MinSecretLen bytes decoded; never logged (RS-23), which is
+	// exactly what wrapping it in secret.Value here, rather than handing
+	// back a bare []byte, is for.
+	CSRFSecret secret.Value
+
+	// ClientsPath is RF-01's static client registry file, loaded by
+	// identity.LoadClients. A path, not the parsed registry itself —
+	// internal/config stays ignorant of internal/identity's own types,
+	// the same boundary direction every other store-shaped setting here
+	// already respects.
+	ClientsPath string
+
+	// KeysDir is ADR-0015's mounted signing keyset directory, loaded by
+	// keys.Load.
+	KeysDir string
+
+	// HashConcurrency, HashWait and HashMemoryCeilingKiB are RS-33's own
+	// three numbers: identity.NewHasher's slots, its per-slot wait before
+	// giving up (identity.ErrSaturated), and the ceiling slots×params.Memory
+	// may not exceed. REQUIREMENTS names the property, not a number —
+	// these defaults (8 slots, 1 GiB ceiling) are this deployment's own
+	// choice, not a requirement restated.
+	HashConcurrency      int
+	HashWait             time.Duration
+	HashMemoryCeilingKiB uint64
+
+	// CrierURL, CrierServiceName and CrierToken configure RI-03's audit
+	// emitter. CrierURL == "" means no crier in this deployment — the
+	// local docker-compose stack does not run one — and
+	// routerDeps.Emitter is left nil ("nil emits nothing" is this
+	// project's own established contract, not a special case to wire
+	// around).
+	CrierURL         string
+	CrierServiceName string
+	CrierToken       secret.Value
 }
 
 // lifetimeBound names one RF-12 lifetime: the environment variable that
@@ -150,10 +202,10 @@ func Load(getenv Getenv) (Config, error) {
 
 	for _, lb := range lifetimeBounds {
 		d := lb.def
-		if raw, ok := getenv(lb.env); ok && raw != "" {
-			parsed, err := time.ParseDuration(raw)
-			if err != nil {
-				return Config{}, fmt.Errorf("config: %s (%s=%q) is not a valid duration: %w", lb.name, lb.env, raw, err)
+		if rawLifetime, lifetimeSet := getenv(lb.env); lifetimeSet && rawLifetime != "" {
+			parsed, parseErr := time.ParseDuration(rawLifetime)
+			if parseErr != nil {
+				return Config{}, fmt.Errorf("config: %s (%s=%q) is not a valid duration: %w", lb.name, lb.env, rawLifetime, parseErr)
 			}
 			d = parsed
 		}
@@ -166,17 +218,17 @@ func Load(getenv Getenv) (Config, error) {
 		lb.assign(&cfg, d)
 	}
 
-	if raw, ok := getenv("USHER_TRUSTED_PROXY_CIDRS"); ok {
-		for part := range strings.SplitSeq(raw, ",") {
+	if rawCIDRs, cidrsSet := getenv("USHER_TRUSTED_PROXY_CIDRS"); cidrsSet {
+		for part := range strings.SplitSeq(rawCIDRs, ",") {
 			if trimmed := strings.TrimSpace(part); trimmed != "" {
 				cfg.TrustedProxyCIDRs = append(cfg.TrustedProxyCIDRs, trimmed)
 			}
 		}
 	}
-	if raw, ok := getenv("USHER_DIRECTLY_EXPOSED"); ok {
-		exposed, err := strconv.ParseBool(raw)
-		if err != nil {
-			return Config{}, fmt.Errorf("config: USHER_DIRECTLY_EXPOSED=%q is not a valid boolean: %w", raw, err)
+	if rawExposed, exposedSet := getenv("USHER_DIRECTLY_EXPOSED"); exposedSet {
+		exposed, parseErr := strconv.ParseBool(rawExposed)
+		if parseErr != nil {
+			return Config{}, fmt.Errorf("config: USHER_DIRECTLY_EXPOSED=%q is not a valid boolean: %w", rawExposed, parseErr)
 		}
 		cfg.DirectlyExposed = exposed
 	}
@@ -185,6 +237,87 @@ func Load(getenv Getenv) (Config, error) {
 	}
 	if len(cfg.TrustedProxyCIDRs) == 0 && !cfg.DirectlyExposed {
 		return Config{}, errors.New("config: set USHER_TRUSTED_PROXY_CIDRS to your proxy's CIDRs, or USHER_DIRECTLY_EXPOSED=true if nothing fronts this server; without one the rate limiter's IP axis would count every client as the same client")
+	}
+
+	if redisPassword, redisPasswordSet := getenv("USHER_REDIS_PASSWORD"); redisPasswordSet {
+		cfg.RedisPassword = redisPassword
+	}
+
+	cfg.ListenAddr = ":8080"
+	if addr, addrSet := getenv("USHER_ADDR"); addrSet && addr != "" {
+		cfg.ListenAddr = addr
+	}
+
+	csrfSecretHex, ok := getenv("USHER_CSRF_SECRET")
+	if !ok || csrfSecretHex == "" {
+		return Config{}, fmt.Errorf("config: USHER_CSRF_SECRET is required and was not set")
+	}
+	csrfSecretBytes, err := hex.DecodeString(csrfSecretHex)
+	if err != nil {
+		return Config{}, fmt.Errorf("config: USHER_CSRF_SECRET is not valid hex: %w", err)
+	}
+	if len(csrfSecretBytes) < csrf.MinSecretLen {
+		return Config{}, fmt.Errorf("config: USHER_CSRF_SECRET decodes to %d bytes, want at least %d (csrf.MinSecretLen)", len(csrfSecretBytes), csrf.MinSecretLen)
+	}
+	cfg.CSRFSecret = secret.New(csrfSecretBytes)
+
+	clientsPath, ok := getenv("USHER_CLIENTS_PATH")
+	if !ok || clientsPath == "" {
+		return Config{}, fmt.Errorf("config: USHER_CLIENTS_PATH is required and was not set")
+	}
+	cfg.ClientsPath = clientsPath
+
+	keysDir, ok := getenv("USHER_KEYS_DIR")
+	if !ok || keysDir == "" {
+		return Config{}, fmt.Errorf("config: USHER_KEYS_DIR is required and was not set")
+	}
+	cfg.KeysDir = keysDir
+
+	cfg.HashConcurrency = 8
+	if rawConcurrency, concurrencySet := getenv("USHER_HASH_CONCURRENCY"); concurrencySet && rawConcurrency != "" {
+		n, convErr := strconv.Atoi(rawConcurrency)
+		if convErr != nil || n <= 0 {
+			return Config{}, fmt.Errorf("config: USHER_HASH_CONCURRENCY=%q must be a positive integer", rawConcurrency)
+		}
+		cfg.HashConcurrency = n
+	}
+
+	cfg.HashWait = 500 * time.Millisecond
+	if rawWait, waitSet := getenv("USHER_HASH_WAIT"); waitSet && rawWait != "" {
+		d, parseErr := time.ParseDuration(rawWait)
+		if parseErr != nil || d <= 0 {
+			return Config{}, fmt.Errorf("config: USHER_HASH_WAIT=%q must be a positive duration", rawWait)
+		}
+		cfg.HashWait = d
+	}
+
+	cfg.HashMemoryCeilingKiB = 1 << 20 // 1 GiB
+	if rawCeiling, ceilingSet := getenv("USHER_HASH_MEMORY_CEILING_KIB"); ceilingSet && rawCeiling != "" {
+		n, convErr := strconv.ParseUint(rawCeiling, 10, 64)
+		if convErr != nil || n == 0 {
+			return Config{}, fmt.Errorf("config: USHER_HASH_MEMORY_CEILING_KIB=%q must be a positive integer", rawCeiling)
+		}
+		cfg.HashMemoryCeilingKiB = n
+	}
+
+	// Crier is entirely optional (RI-03): this deployment's own
+	// docker-compose stack does not run one. CrierURL == "" is read
+	// downstream as "no audit emitter," never as a malformed one.
+	if crierURL, crierURLSet := getenv("USHER_CRIER_URL"); crierURLSet {
+		cfg.CrierURL = crierURL
+	}
+	if cfg.CrierURL != "" {
+		serviceName, serviceNameSet := getenv("USHER_CRIER_SERVICE_NAME")
+		if !serviceNameSet || serviceName == "" {
+			return Config{}, fmt.Errorf("config: USHER_CRIER_URL is set but USHER_CRIER_SERVICE_NAME was not")
+		}
+		cfg.CrierServiceName = serviceName
+
+		tokenRaw, tokenSet := getenv("USHER_CRIER_TOKEN")
+		if !tokenSet || tokenRaw == "" {
+			return Config{}, fmt.Errorf("config: USHER_CRIER_URL is set but USHER_CRIER_TOKEN was not")
+		}
+		cfg.CrierToken = secret.New([]byte(tokenRaw))
 	}
 
 	return cfg, nil

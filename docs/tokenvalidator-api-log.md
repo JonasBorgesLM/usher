@@ -137,3 +137,72 @@ restart — and also means an already-cached kid is served from it
 indefinitely until some unrelated miss happens to trigger a refetch that
 drops it. That gap is RS-09's own already-documented residual, not a new
 one.
+
+---
+
+## M4 — Refresh rotation and revocation (issue #38)
+
+**Added retroactively, as part of #43's own work.** This row should have
+been appended when #38 closed; it was not, and the gap sat between the M3
+row above and M6's below until this entry filled it. Added now, honestly
+dated to the phase that actually produced the change rather than to #43,
+since backdating a measurement to the PR that happens to notice a gap
+would misreport which phase's own iteration actually drove it.
+
+**Consumer driving this entry:** `cmd/usher`'s own `/revoke` handler
+(#38) — the first real, in-process caller this package had, after M0-M3
+each built toward one without yet having it.
+
+**Exported surface, changed from M3:**
+
+```
+// New — ValidateForRevocation, alongside ValidateAccessToken: the same
+// signature verification and claim set (RS-06, RS-07, RS-08's typ
+// check), without the audience check a resource-server caller needs
+// but /revoke's own caller (the client the token was issued to, not a
+// resource server enforcing RS-19) does not have one to check against.
+func (v *Validator) ValidateForRevocation(ctx context.Context, raw string) (Claims, error)
+
+// New — WithClock, an Option: overrides what "now" means for
+// exp/nbf/iat validation. internal/keys.Load's own WithClock (#32)
+// found the same gap first: a caller that issues and validates within
+// the same process over an injected, non-real clock needs validation
+// to agree with issuance, which jwx's own default (the real system
+// clock) cannot.
+func WithClock(now func() time.Time) Option
+```
+
+Everything else — `Algorithm`, `KeySource`, `WithClockSkew`, `WithIssuer`,
+`Claims`, `Validator`, `New`'s own signature, `ValidateAccessToken`'s own
+signature, `ValidateIDToken`, `JWKSSource` and its own methods — is
+byte-for-byte unchanged from M3.
+
+**What the implementation does, since the signature alone doesn't say
+it:** `ValidateAccessToken` and `ValidateForRevocation` share one private
+`verify` core; the audience check (`jwt.WithAudience`) is applied only
+when the caller's own `wantAudience` is non-empty, which is the one claim
+whose requirement differs between the two public methods. `WithClock`
+threads a `jwt.ClockFunc` into that same core's `jwt.Parse` call only when
+set; a nil clock (the default) leaves jwx's own real-time behavior
+unchanged.
+
+---
+
+## M6 — Gateway (issue #43)
+
+**Consumer driving this entry:** `cmd/resource-server` — the second real
+consumer this package's own doc comment named from M0 without yet having
+one, and the measurement `moat`'s own reopening criterion asked for
+(ADR-0009): does the signature stabilize under a second, independent
+caller, or does a second consumer need something the first one's own
+iteration never surfaced.
+
+**Exported surface, changed from M4:** none. `cmd/resource-server`
+constructs a `Validator` with `NewJWKSSource` and calls
+`ValidateAccessToken` exactly as `docs/ARCHITECTURE.md` §7 described
+before either had a body, and exactly as `internal/proxy`'s own gateway
+handler (#40) already does in-process via `Keyset.AsKeySource` instead of
+`NewJWKSSource`. Two consumers, reaching the package two different ways
+(in-process vs. over HTTP), needed no option, no new error variant and no
+signature change between them. That is the measurement itself, not an
+absence of one.

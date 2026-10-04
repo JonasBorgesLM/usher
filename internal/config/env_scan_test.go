@@ -21,6 +21,15 @@ import (
 // Test files are excluded: the rule is about the application reading its own
 // configuration in one place, not about what a _test.go file's setup does.
 //
+// cmd/resource-server is also excluded, for a structural reason rather than
+// this package's own convenience: check-boundaries.sh forbids that binary
+// from importing internal/ at all (RS-18 — it must validate exactly as an
+// outside consumer would), which includes internal/config itself. It has no
+// path to this package's Load and therefore no choice but to read its own,
+// much smaller, environment directly (#43) — the rule's own rationale ("a
+// setting Load's checks never see") does not apply to a binary that cannot
+// reach Load in the first place.
+//
 // Negative control: run once against a scratch file under internal/oauth
 // containing `_ = os.Getenv("X")` — this test failed, naming the file and
 // the call, then passed again once the file was removed.
@@ -51,6 +60,9 @@ func TestOSEnvironmentIsReadOnlyInConfig(t *testing.T) {
 		if rel == filepath.Join("internal", "config", "config.go") ||
 			strings.HasPrefix(rel, filepath.Join("internal", "config")+string(filepath.Separator)) {
 			return nil // this package is where reading the environment belongs
+		}
+		if strings.HasPrefix(rel, filepath.Join("cmd", "resource-server")+string(filepath.Separator)) {
+			return nil // cannot import internal/config at all (RS-18); see doc comment above
 		}
 
 		file, err := parser.ParseFile(fset, path, nil, 0)
