@@ -10,6 +10,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -147,6 +149,40 @@ func gatewayErrorHandler(w http.ResponseWriter, _ *http.Request, _ error) {
 	w.WriteHeader(http.StatusBadGateway)
 }
 
+// breakerRetryAfterSeconds is ADR-0016's own rule 1 half-answered: a
+// static, conservative Retry-After, not one derived from the breaker's
+// own configured WithOpenTimeout. bastion.Breaker exposes Counts (state,
+// OpenedAt) but not the open-timeout duration itself, and Counts.OpenedAt
+// is zero for StateHalfOpen's own rejection (ErrTooManyRequests) in any
+// case — there is no value to compute an exact remaining wait from for
+// that one. Per ADR-0016's own charge ("usher becomes bastion's first
+// real integration and should report back what its API cost to use"),
+// this gap is the finding: a real caller wanting a precise Retry-After
+// needs bastion to expose the configured timeout, which it does not yet.
+const breakerRetryAfterSeconds = 30
+
+// breakerRoundTripper wraps an http.RoundTripper in one *bastion.Breaker
+// (ADR-0016: "one named breaker per upstream, wrapping the outbound
+// call"). httputil.ReverseProxy's own Transport.RoundTrip is the one
+// outbound call per incoming request this package makes — wrapping it
+// here, rather than rp.ServeHTTP itself, is what lets a rejection reach
+// ReverseProxy's existing ErrorHandler path (#40) as an ordinary
+// RoundTrip error, instead of needing a second, parallel error-handling
+// mechanism: ReverseProxy.ServeHTTP has no return value for an error to
+// come back through.
+type breakerRoundTripper struct {
+	breaker *bastion.Breaker
+	next    http.RoundTripper
+}
+
+// RoundTrip implements http.RoundTripper, admitting through rt.breaker
+// before ever calling rt.next.
+func (rt *breakerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
+		return rt.next.RoundTrip(req)
+	})
+}
+
 // unauthorized is every auth-failure response this handler returns:
 // missing bearer token, a token that fails ValidateAccessToken, or one
 // found on the denylist. One body (none) for all three, the same
@@ -180,15 +216,31 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 		logger = slog.New(slog.DiscardHandler)
 	}
 
+	var transport http.RoundTripper = newUpstreamTransport()
+	if route.Breaker != nil {
+		transport = &breakerRoundTripper{breaker: route.Breaker, next: transport}
+	}
+
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = route.Upstream.Scheme
 			req.URL.Host = route.Upstream.Host
 			req.Host = route.Upstream.Host
 		},
-		Transport: newUpstreamTransport(),
+		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.ErrorContext(r.Context(), "proxy: upstream error", "error", err)
+			// ADR-0016 rule 1: a breaker rejection is 503 + Retry-After,
+			// never the bare 502 a genuine upstream failure gets --
+			// "the circuit is open" is not the same fact as "the
+			// upstream is down," and a caller retrying immediately
+			// against a 502 would be doing exactly what the breaker
+			// exists to stop.
+			if errors.Is(err, bastion.ErrOpenState) || errors.Is(err, bastion.ErrTooManyRequests) {
+				w.Header().Set("Retry-After", strconv.Itoa(breakerRetryAfterSeconds))
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			gatewayErrorHandler(w, r, err)
 		},
 		// RS-21's response-size half: res.Body is swapped for a reader

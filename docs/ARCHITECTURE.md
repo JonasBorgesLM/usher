@@ -607,7 +607,7 @@ type Route struct {
 	PathPrefix string
 	Upstream   *url.URL
 	Audience   string
-	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42, unused by #40/#41
+	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream (#42). nil is a valid "no breaker configured for this route."
 }
 
 // ValidateRoute is RS-19/RNF-05: a Route with no Audience must refuse to
@@ -649,6 +649,20 @@ func ValidateRoute(route Route) error
 // a fixed size before any of it reaches the client. Hop-by-hop headers
 // and "never follow an upstream redirect" are net/http/httputil's own
 // documented behavior, not something this package adds.
+//
+// If route.Breaker is set, the outbound call (Transport.RoundTrip, not
+// the whole request) runs through it via bastion.Execute (#42,
+// ADR-0016). bastion.ErrOpenState and bastion.ErrTooManyRequests reach
+// ErrorHandler as ordinary RoundTrip errors — mapped there to 503 +
+// Retry-After, never the bare 502 a genuine upstream failure gets
+// (ADR-0016 rule 1). No internal retry wraps the breaker, so exactly one
+// outbound attempt happens per incoming request regardless of its
+// outcome — what makes "the rate limiter runs once, on the way in"
+// (ADR-0016 rule 2) hold for whatever outer middleware wraps this
+// handler, without this package needing to know what that middleware is.
+// Retry-After is a fixed, conservative value: bastion does not expose
+// its own configured WithOpenTimeout for a precise one — reported back
+// per ADR-0016 ("usher becomes bastion's first real integration...").
 //
 // A nil logger discards.
 func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist, logger *slog.Logger) http.Handler
