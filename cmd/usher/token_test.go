@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -189,6 +190,14 @@ func decodeTokenSuccess(t *testing.T, rec *httptest.ResponseRecorder) tokenSucce
 // Negative control: with the `hdrs.Set(jws.TypeKey, "at+jwt")` call
 // removed from signJWT, this test failed -- the JWS header carried no
 // typ at all. Verified by hand, restored before committing.
+//
+// Second negative control (#45, RS-08): with the `slices.Contains(scope,
+// "openid")` gate in issueAccessToken short-circuited to always-false,
+// this test's own aud assertion failed -- the access token carried only
+// the resource-server audience, missing the userinfo one an
+// openid-scoped request must also get. TestUserinfo_GoldenPath failed
+// alongside it, for the same reason. Verified by hand, restored before
+// committing.
 func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	client := testClient()
 	client.Audiences = []string{"https://rs.example"}
@@ -246,8 +255,12 @@ func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	if sub, _ := parsed.Subject(); sub != testSubject {
 		t.Errorf("sub = %q, want %q", sub, testSubject)
 	}
-	if aud, _ := parsed.Audience(); len(aud) != 1 || aud[0] != "https://rs.example" {
-		t.Errorf("aud = %v, want [https://rs.example]", aud)
+	// RS-08: an openid-scoped request's access token carries usher's own
+	// userinfo audience alongside the resource server's, never in place
+	// of it (#45).
+	wantAud := []string{"https://rs.example", userinfoAudience(deps.Issuer)}
+	if aud, _ := parsed.Audience(); !slices.Equal(aud, wantAud) {
+		t.Errorf("aud = %v, want %v", aud, wantAud)
 	}
 	if _, expOK := parsed.Expiration(); !expOK {
 		t.Error("exp is missing")

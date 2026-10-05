@@ -304,10 +304,22 @@ func (h *tokenHandler) issueAccessToken(client identity.Client, subject string, 
 		return nil, fmt.Errorf("generate jti: %w", err)
 	}
 	now := h.now()
+
+	// RS-08: /userinfo is itself a protected resource, not a free pass
+	// just because the same access token also works at a resource
+	// server -- an openid-scoped request's token carries usher's own
+	// userinfo audience alongside client.Audiences, never in place of
+	// it. slices.Concat always returns a fresh slice, so this never
+	// aliases client.Audiences across requests for the same client.
+	audience := client.Audiences
+	if slices.Contains(scope, "openid") {
+		audience = slices.Concat(client.Audiences, []string{userinfoAudience(h.issuer)})
+	}
+
 	claims := accessTokenClaims{
 		Issuer:    h.issuer,
 		Subject:   subject,
-		Audience:  client.Audiences,
+		Audience:  audience,
 		ClientID:  client.ID,
 		Scope:     strings.Join(scope, " "),
 		ExpiresAt: now.Add(h.accessTokenTTL).Unix(),
