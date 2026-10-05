@@ -54,14 +54,17 @@ type tokenErrorBody struct {
 	ErrorDescription string `json:"error_description,omitempty"`
 }
 
-// tokenSuccessBody is RFC 6749 §5.1's response. RefreshToken is empty,
-// and so omitted, on a refresh_token grant whose own request narrowed
-// scope to something that no longer includes offline_access — this
-// project does not special-case that; RefreshToken is populated whenever
-// the handler actually issued one, full stop.
+// tokenSuccessBody is RFC 6749 §5.1's response, plus IDToken (OIDC Core,
+// RF-03): empty, and so omitted, unless the granted scope included
+// openid. RefreshToken is empty, and so omitted, on a refresh_token
+// grant whose own request narrowed scope to something that no longer
+// includes offline_access — this project does not special-case that;
+// RefreshToken is populated whenever the handler actually issued one,
+// full stop.
 type tokenSuccessBody struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token,omitempty"`
+	IDToken      string `json:"id_token,omitempty"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope,omitempty"`
@@ -82,6 +85,32 @@ type accessTokenClaims struct {
 	NotBefore int64    `json:"nbf"`
 	IssuedAt  int64    `json:"iat"`
 	JTI       string   `json:"jti"`
+}
+
+// idTokenClaims is OIDC Core's own required claim set for an id_token
+// (RF-03, RF-11): aud is the client alone, never a resource server's
+// audience (RS-08). What actually makes the gateway's own
+// ValidateAccessToken(ctx, token, routeAudience) call refuse an id_token
+// on sight is the JWS typ header signJWT sets to "id_token" here (never
+// "at+jwt") — pkg/tokenvalidator's own verify checks that header before
+// it ever looks at aud, so this id_token would be refused even on a
+// route whose audience happened to match. Nonce is "" — and so omitted —
+// when the authorization request carried none (RS-30): an absent nonce
+// claim, not an empty-string one, matches what OIDC Core itself expects
+// back.
+//
+// auth_time (RF-11, under max_age) is deliberately not a field here yet:
+// nothing before #47 parses max_age from the authorization request at
+// all, so there is no value this struct could ever carry that would mean
+// anything -- adding the claim now would be an untestable, dead field.
+// #47 is where max_age itself becomes real, and where this claim belongs.
+type idTokenClaims struct {
+	Issuer    string   `json:"iss"`
+	Subject   string   `json:"sub"`
+	Audience  []string `json:"aud"`
+	ExpiresAt int64    `json:"exp"`
+	IssuedAt  int64    `json:"iat"`
+	Nonce     string   `json:"nonce,omitempty"`
 }
 
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -143,6 +172,20 @@ func (h *tokenHandler) handleAuthorizationCode(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// RF-03: an id_token only when the granted scope included openid --
+	// never unconditionally, and never widened beyond what the client
+	// itself asked for and the user consented to.
+	var idToken string
+	if slices.Contains(issued.Scope, "openid") {
+		signed, err := h.issueIDToken(client, issued.Subject, issued.Nonce)
+		if err != nil {
+			h.logger.ErrorContext(r.Context(), "token: issue id token", "error", err)
+			h.writeError(w, http.StatusInternalServerError, "server_error")
+			return
+		}
+		idToken = string(signed)
+	}
+
 	// RF-02 Flow 2 steps 6-7: a client whose grant_types include
 	// refresh_token also gets one, and the code that produced it is
 	// tombstoned against the new family only now, after issuance
@@ -174,7 +217,7 @@ func (h *tokenHandler) handleAuthorizationCode(w http.ResponseWriter, r *http.Re
 		refreshToken = refreshRaw
 	}
 
-	h.writeSuccess(w, r, accessToken, refreshToken, issued.Scope)
+	h.writeSuccess(w, r, accessToken, refreshToken, idToken, issued.Scope)
 }
 
 // handleRefreshToken is RF-04 Flow 3 (docs/ARCHITECTURE.md §12): RS-34's
@@ -242,7 +285,11 @@ func (h *tokenHandler) handleRefreshToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.writeSuccess(w, r, accessToken, nextRaw, scope)
+	// RF-03 does not require re-issuing an id_token on refresh (OIDC
+	// Core itself leaves it optional), and nothing cites a reason to
+	// here -- "" omits the field, the same as every other grant that
+	// never had openid in scope at all.
+	h.writeSuccess(w, r, accessToken, nextRaw, "", scope)
 }
 
 // issueAccessToken signs a fresh access token for subject under client,
@@ -268,15 +315,40 @@ func (h *tokenHandler) issueAccessToken(client identity.Client, subject string, 
 		IssuedAt:  now.Unix(),
 		JTI:       jti,
 	}
-	return signAccessToken(key, claims)
+	return signJWT(key, "at+jwt", claims)
 }
 
-func (h *tokenHandler) writeSuccess(w http.ResponseWriter, r *http.Request, accessToken []byte, refreshToken string, scope []string) {
+// issueIDToken signs a fresh id_token for subject under client (RF-03,
+// RF-11): aud is the client alone (RS-08), never client.Audiences --
+// that field is the access token's own resource-server audience list,
+// and reusing it here is exactly the mistake RS-08's typ-and-aud-both
+// check exists to catch even if it were made. nonce is echoed unchanged
+// (RS-30) from whatever ConsumeCode returned on the Code it came from;
+// "" omits the claim entirely rather than sending an empty one.
+func (h *tokenHandler) issueIDToken(client identity.Client, subject, nonce string) ([]byte, error) {
+	key, err := h.keyset.Signing(h.now())
+	if err != nil {
+		return nil, fmt.Errorf("resolve signing key: %w", err)
+	}
+	now := h.now()
+	claims := idTokenClaims{
+		Issuer:    h.issuer,
+		Subject:   subject,
+		Audience:  []string{client.ID},
+		ExpiresAt: now.Add(h.accessTokenTTL).Unix(),
+		IssuedAt:  now.Unix(),
+		Nonce:     nonce,
+	}
+	return signJWT(key, "id_token", claims)
+}
+
+func (h *tokenHandler) writeSuccess(w http.ResponseWriter, r *http.Request, accessToken []byte, refreshToken, idToken string, scope []string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(tokenSuccessBody{
 		AccessToken:  string(accessToken),
 		RefreshToken: refreshToken,
+		IDToken:      idToken,
 		TokenType:    "Bearer",
 		ExpiresIn:    int(h.accessTokenTTL.Seconds()),
 		Scope:        strings.Join(scope, " "),
@@ -339,11 +411,16 @@ func writeOAuthError(w http.ResponseWriter, logger *slog.Logger, status int, err
 	}
 }
 
-// signAccessToken builds the RS-07 claim set into a compact JWS: typ:
-// at+jwt in the protected header (RFC 9068, RS-08), key's own kid carried
-// automatically (RS-09, proven for this exact call shape by
-// TestKey_SigningProducesKIDHeader in internal/keys).
-func signAccessToken(key keys.Key, claims accessTokenClaims) ([]byte, error) {
+// signJWT builds claims into a compact JWS under the given typ header
+// (RFC 9068's at+jwt for an access token, OIDC Core's id_token for an
+// ID token, RS-07/RS-08) — key's own kid carried automatically (RS-09,
+// proven for this exact call shape by TestKey_SigningProducesKIDHeader
+// in internal/keys). Shared by issueAccessToken and issueIDToken (#44)
+// rather than duplicated per claim type: RS-06's algorithm resolution
+// below must not exist in two slightly different copies, the same
+// reasoning that moved tokenvalidator's own verification core behind
+// one shared function in #38.
+func signJWT(key keys.Key, typ string, claims any) ([]byte, error) {
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return nil, fmt.Errorf("token: marshal claims: %w", err)
@@ -355,7 +432,7 @@ func signAccessToken(key keys.Key, claims accessTokenClaims) ([]byte, error) {
 	}
 
 	hdrs := jws.NewHeaders()
-	if setErr := hdrs.Set(jws.TypeKey, "at+jwt"); setErr != nil {
+	if setErr := hdrs.Set(jws.TypeKey, typ); setErr != nil {
 		return nil, fmt.Errorf("token: set typ header: %w", setErr)
 	}
 
@@ -371,7 +448,7 @@ func signAccessToken(key keys.Key, claims accessTokenClaims) ([]byte, error) {
 
 	signed, err := jws.Sign(payload, jws.WithKey(alg, signingJWK, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
-		return nil, fmt.Errorf("token: sign access token: %w", err)
+		return nil, fmt.Errorf("token: sign %s: %w", typ, err)
 	}
 	return signed, nil
 }

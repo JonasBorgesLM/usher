@@ -108,6 +108,46 @@ func testAccessTokenForAudience(t *testing.T, priv *rsa.PrivateKey, jti string, 
 	return string(signed)
 }
 
+// idClaims mirrors cmd/usher/token.go's own idTokenClaims shape (RF-03,
+// RF-11), duplicated rather than imported for the same ADR-0001 reason
+// accessClaims above is: no client_id, no scope, no jti -- an id_token
+// genuinely carries none of those.
+type idClaims struct {
+	Issuer    string   `json:"iss"`
+	Subject   string   `json:"sub"`
+	Audience  []string `json:"aud"`
+	ExpiresAt int64    `json:"exp"`
+	IssuedAt  int64    `json:"iat"`
+}
+
+// testIDToken signs a token shaped exactly like cmd/usher/token.go's
+// issueIDToken output: typ: id_token in the JWS header (never at+jwt),
+// and none of accessClaims' extra fields.
+func testIDToken(t *testing.T, priv *rsa.PrivateKey, audience string) string {
+	t.Helper()
+	now := time.Now()
+	claims := idClaims{
+		Issuer: testIssuer, Subject: testSubject, Audience: []string{audience},
+		ExpiresAt: now.Add(5 * time.Minute).Unix(), IssuedAt: now.Unix(),
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("marshal claims: %v", err)
+	}
+	hdrs := jws.NewHeaders()
+	if setErr := hdrs.Set(jws.KeyIDKey, testKID); setErr != nil {
+		t.Fatalf("set kid: %v", setErr)
+	}
+	if setErr := hdrs.Set(jws.TypeKey, "id_token"); setErr != nil {
+		t.Fatalf("set typ: %v", setErr)
+	}
+	signed, err := jws.Sign(payload, jws.WithKey(jwa.RS256(), priv, jws.WithProtectedHeaders(hdrs)))
+	if err != nil {
+		t.Fatalf("jws.Sign: %v", err)
+	}
+	return string(signed)
+}
+
 // fakeDenylist is a small, controllable stand-in for Denylist -- the real
 // one (internal/store/redis) is proven against real Redis in its own
 // integration tests (#38); this file tests NewHandler's own orchestration
@@ -565,6 +605,34 @@ func TestNewHandler_CrossAudienceTokenRefused(t *testing.T) {
 	}
 	if receivedB() != nil {
 		t.Error("RS-B's upstream was called with a token issued for RS-A's audience")
+	}
+}
+
+// TestNewHandler_IDTokenRefused is #44's own gateway-side done-when: an
+// id_token presented as a bearer credential gets 401, same as any other
+// bearer credential whose shape is wrong. This is not a new protection --
+// pkg/tokenvalidator's typ == "at+jwt" check (RS-08, #38/#40) already
+// rejects anything whose JWS header says otherwise, before it ever looks
+// at a claim -- this test only proves that existing, unchanged check also
+// catches the real shape an id_token now takes. Audience is deliberately
+// set to match the route's own (unlike TestNewHandler_CrossAudienceTokenRefused
+// above, which isolates aud instead): with typ rejecting first, aud never
+// gets reached regardless, so there's nothing left here to isolate.
+func TestNewHandler_IDTokenRefused(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	route := testRoute(t, upstream)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+
+	idToken := testIDToken(t, priv, testAudience)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+idToken, nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d (an id_token presented as a bearer credential)", rec.Code, http.StatusUnauthorized)
+	}
+	if received() != nil {
+		t.Error("upstream was called with an id_token as the bearer credential")
 	}
 }
 

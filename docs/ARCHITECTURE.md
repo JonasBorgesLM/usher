@@ -733,14 +733,21 @@ config error into an open redirect (RS-28), and it compiles either way.
 5. `keys.Keyset.Signing(now)` to get the active key; sign the access token
    with the requested resource server's audience, `typ: at+jwt` (RS-06,
    RS-07, RS-08).
-6. If the client's grant types include `refresh_token`:
+6. If the granted scope includes `openid`: sign an id_token with the same
+   key, `typ: id_token`, `aud` = the client alone (never the resource
+   server's audience — RS-08, RF-03, RF-11), `nonce` echoed unchanged from
+   the `Code` when one was bound at `/authorize`, omitted otherwise
+   (RS-30). This typ header, not the differing `aud`, is what makes
+   Flow 1's gateway reject an id_token presented as a bearer credential —
+   `aud` is never inspected if `typ` already failed.
+7. If the client's grant types include `refresh_token`:
    `FamilyStore.CreateFamily` with a fresh opaque token (RS-10).
-7. `CodeStore.Tombstone(code, familyID, ttl=maxAccessTokenTTL)` — **after**
+8. `CodeStore.Tombstone(code, familyID, ttl=maxAccessTokenTTL)` — **after**
    issuance, not before (§2.1's stated residual covers the window this
    still leaves).
-8. `audit.Emit(EventTokenIssued)`.
-9. Respond with `Cache-Control: no-store` (RS-26) and the fixed error
-   shape on any failure above (RS-25).
+9. `audit.Emit(EventTokenIssued)`.
+10. Respond with `Cache-Control: no-store` (RS-26) and the fixed error
+    shape on any failure above (RS-25).
 
 ## 12. Flow 3 — `POST /token`, `refresh_token` (RS-11, ADR-0012, RS-34)
 
@@ -760,7 +767,10 @@ config error into an open redirect (RS-28), and it compiles either way.
    (EventRefreshReuse)` at high severity, respond `invalid_grant`.
 7. **`consumed == true`:** this is the legitimate exchange. Sign a new
    access token (as in Flow 2, step 5); the response carries `next`'s raw
-   value once — it is never retrievable again (RS-10).
+   value once — it is never retrievable again (RS-10). No id_token is
+   reissued here (Flow 2, step 6) — OIDC Core leaves that optional on
+   refresh, and nothing in REQUIREMENTS.md or the threat model asks for
+   it.
 8. Respond with `Cache-Control: no-store` (RS-26).
 
 ---

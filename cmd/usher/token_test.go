@@ -125,10 +125,18 @@ func confidentialTestClient(secret string) identity.Client {
 // through that whole flow.
 func seedCode(t *testing.T, deps routerDeps, value, clientID, redirectURI string, scope []string) {
 	t.Helper()
+	seedCodeWithNonce(t, deps, value, clientID, redirectURI, scope, "")
+}
+
+// seedCodeWithNonce is seedCode with the nonce exposed, for #44's own
+// done-when that a nonce present on the code is echoed, unchanged, in
+// the id_token (RS-30).
+func seedCodeWithNonce(t *testing.T, deps routerDeps, value, clientID, redirectURI string, scope []string, nonce string) {
+	t.Helper()
 	code := oauth.Code{
 		Value: value, ClientID: clientID, RedirectURI: redirectURI,
 		CodeChallenge: testCodeChallenge(), Scope: scope, Subject: testSubject,
-		ExpiresAt: deps.Now().Add(time.Minute),
+		Nonce: nonce, ExpiresAt: deps.Now().Add(time.Minute),
 	}
 	if err := deps.Codes.Save(context.Background(), code); err != nil {
 		t.Fatalf("seed code: %v", err)
@@ -171,12 +179,16 @@ func decodeTokenSuccess(t *testing.T, rec *httptest.ResponseRecorder) tokenSucce
 // TestToken_AuthorizationCode_GoldenPath is RF-03's own done-when: a
 // correct authorization_code exchange issues an access token with the
 // full RS-07 claim set, typ: at+jwt (RS-08, RFC 9068), and aud = the
-// client's own configured audiences -- no refresh_token, no id_token
-// (M2's stated scope).
+// client's own configured audiences -- no refresh_token (this client's
+// own grant_types never include it). The scope requested here
+// (openid profile) also makes this the golden path for id_token
+// issuance (#44): see the id_token assertions below, added once that
+// became real -- this test's own comment used to say "no id_token
+// (M2's stated scope)", which M7 supersedes directly.
 //
 // Negative control: with the `hdrs.Set(jws.TypeKey, "at+jwt")` call
-// removed from signAccessToken, this test failed -- the JWS header
-// carried no typ at all. Verified by hand, restored before committing.
+// removed from signJWT, this test failed -- the JWS header carried no
+// typ at all. Verified by hand, restored before committing.
 func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	client := testClient()
 	client.Audiences = []string{"https://rs.example"}
@@ -203,10 +215,13 @@ func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	if body.Scope != "openid profile" {
 		t.Errorf("scope = %q, want %q", body.Scope, "openid profile")
 	}
-	// tokenSuccessBody itself has no refresh_token/id_token field at all
-	// (M2's stated scope) -- there is nothing further to assert here.
-	if strings.Contains(rec.Body.String(), "refresh_token") || strings.Contains(rec.Body.String(), "id_token") {
-		t.Errorf("response body unexpectedly mentions refresh_token/id_token: %s", rec.Body.String())
+	// This client's grant_types never include refresh_token (testClient(),
+	// authorize_test.go) -- that half of the old assertion still holds.
+	if strings.Contains(rec.Body.String(), "refresh_token") {
+		t.Errorf("response body unexpectedly mentions refresh_token: %s", rec.Body.String())
+	}
+	if body.IDToken == "" {
+		t.Fatal("id_token is empty, want one since scope includes openid (RF-03, RF-11)")
 	}
 
 	key := deps.Keyset.Published(deps.Now())[0]
@@ -216,9 +231,9 @@ func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jws.Parse: %v", err)
 	}
-	typ, ok := msg.Signatures()[0].ProtectedHeaders().Type()
-	if !ok || typ != "at+jwt" {
-		t.Errorf("JWS typ header = %q, ok=%v, want %q (RFC 9068, RS-08)", typ, ok, "at+jwt")
+	typ, typOK := msg.Signatures()[0].ProtectedHeaders().Type()
+	if !typOK || typ != "at+jwt" {
+		t.Errorf("JWS typ header = %q, ok=%v, want %q (RFC 9068, RS-08)", typ, typOK, "at+jwt")
 	}
 
 	parsed, err := jwt.Parse([]byte(body.AccessToken), jwt.WithKey(jwa.RS256(), pub), jwt.WithValidate(false))
@@ -234,21 +249,135 @@ func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	if aud, _ := parsed.Audience(); len(aud) != 1 || aud[0] != "https://rs.example" {
 		t.Errorf("aud = %v, want [https://rs.example]", aud)
 	}
-	if _, ok := parsed.Expiration(); !ok {
+	if _, expOK := parsed.Expiration(); !expOK {
 		t.Error("exp is missing")
 	}
-	if _, ok := parsed.NotBefore(); !ok {
+	if _, nbfOK := parsed.NotBefore(); !nbfOK {
 		t.Error("nbf is missing")
 	}
-	if _, ok := parsed.IssuedAt(); !ok {
+	if _, iatOK := parsed.IssuedAt(); !iatOK {
 		t.Error("iat is missing")
 	}
-	if jti, ok := parsed.JwtID(); !ok || jti == "" {
+	if jti, jtiOK := parsed.JwtID(); !jtiOK || jti == "" {
 		t.Error("jti is missing or empty")
 	}
 	clientID, err := jwt.Get[string](parsed, "client_id")
 	if err != nil || clientID != testClientID {
 		t.Errorf("client_id = %q, err=%v, want %q", clientID, err, testClientID)
+	}
+
+	idMsg, err := jws.Parse([]byte(body.IDToken))
+	if err != nil {
+		t.Fatalf("jws.Parse(id_token): %v", err)
+	}
+	idTyp, idTypOK := idMsg.Signatures()[0].ProtectedHeaders().Type()
+	if !idTypOK || idTyp != "id_token" {
+		t.Errorf("id_token JWS typ header = %q, ok=%v, want %q", idTyp, idTypOK, "id_token")
+	}
+	idParsed, err := jwt.Parse([]byte(body.IDToken), jwt.WithKey(jwa.RS256(), pub), jwt.WithValidate(false))
+	if err != nil {
+		t.Fatalf("parse/verify id_token: %v", err)
+	}
+	if iss, _ := idParsed.Issuer(); iss != deps.Issuer {
+		t.Errorf("id_token iss = %q, want %q", iss, deps.Issuer)
+	}
+	if sub, _ := idParsed.Subject(); sub != testSubject {
+		t.Errorf("id_token sub = %q, want %q", sub, testSubject)
+	}
+	// aud is the client alone (RS-08) -- never client.Audiences. What
+	// actually gets this id_token rejected at the gateway is its JWS typ
+	// header ("id_token", never "at+jwt" -- see proxy_test.go's own
+	// addition for #44), checked before aud ever comes into it.
+	if aud, _ := idParsed.Audience(); len(aud) != 1 || aud[0] != testClientID {
+		t.Errorf("id_token aud = %v, want [%s]", aud, testClientID)
+	}
+	if _, idExpOK := idParsed.Expiration(); !idExpOK {
+		t.Error("id_token exp is missing")
+	}
+	if _, idIatOK := idParsed.IssuedAt(); !idIatOK {
+		t.Error("id_token iat is missing")
+	}
+	// This test's own seedCode call carries no nonce -- omitted, not
+	// empty-string (RS-30). See TestToken_AuthorizationCode_NonceEchoed
+	// for the round-trip case.
+	if nonce, err := jwt.Get[string](idParsed, "nonce"); err == nil {
+		t.Errorf("id_token nonce = %q, want absent (no nonce on this code)", nonce)
+	}
+}
+
+// TestToken_AuthorizationCode_NonceEchoed is #44's own done-when: a
+// nonce bound to the code at /authorize (RF-11) comes back unchanged in
+// the id_token (RS-30) -- never regenerated, never dropped.
+//
+// Negative control: with `Nonce: nonce` removed from issueIDToken's
+// idTokenClaims construction, this test failed -- the id_token carried
+// no nonce claim at all while this test's own code had one. Verified by
+// hand, restored before committing.
+func TestToken_AuthorizationCode_NonceEchoed(t *testing.T) {
+	const wantNonce = "test-nonce-7f3a"
+	client := testClient()
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+	seedCodeWithNonce(t, deps, testTokenCode, testClientID, testRedirectURI, []string{"openid"}, wantNonce)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(validTokenForm(), "", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /token = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeTokenSuccess(t, rec)
+	if body.IDToken == "" {
+		t.Fatal("id_token is empty")
+	}
+
+	key := deps.Keyset.Published(deps.Now())[0]
+	pub := key.Private.Public()
+	parsed, err := jwt.Parse([]byte(body.IDToken), jwt.WithKey(jwa.RS256(), pub), jwt.WithValidate(false))
+	if err != nil {
+		t.Fatalf("parse/verify id_token: %v", err)
+	}
+	nonce, err := jwt.Get[string](parsed, "nonce")
+	if err != nil || nonce != wantNonce {
+		t.Errorf("id_token nonce = %q, err=%v, want %q", nonce, err, wantNonce)
+	}
+}
+
+// TestToken_RefreshToken_NoIDTokenReissued documents a deliberate choice,
+// not an oversight: OIDC Core leaves re-issuing id_token on refresh
+// optional, and nothing in REQUIREMENTS.md or the threat model asks for
+// it, so handleRefreshToken passes "" unconditionally rather than
+// calling issueIDToken a second time.
+func TestToken_RefreshToken_NoIDTokenReissued(t *testing.T) {
+	client := testClient()
+	client.GrantTypes = []string{"authorization_code", "refresh_token"}
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+	seedCode(t, deps, testTokenCode, testClientID, testRedirectURI, []string{"openid"})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(validTokenForm(), "", ""))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /token (authorization_code) = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	issued := decodeTokenSuccess(t, rec)
+	if issued.RefreshToken == "" {
+		t.Fatal("refresh_token is empty, want one since client.GrantTypes includes it")
+	}
+
+	refreshForm := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {issued.RefreshToken},
+		"client_id":     {testClientID},
+	}
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, postToken(refreshForm, "", ""))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("POST /token (refresh_token) = %d, want %d, body: %s", rec2.Code, http.StatusOK, rec2.Body.String())
+	}
+	refreshed := decodeTokenSuccess(t, rec2)
+	if refreshed.IDToken != "" {
+		t.Errorf("id_token = %q, want empty on refresh_token grant", refreshed.IDToken)
 	}
 }
 
