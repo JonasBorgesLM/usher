@@ -908,3 +908,40 @@ server's audience, and never for a token issued without `openid` in
 scope. A token issued for a request that never asked for `openid` is
 therefore refused here even though it is otherwise perfectly valid: aud
 mismatch, not a signature or claims-shape problem.
+
+---
+
+## 17. `GET /.well-known/openid-configuration` (RS-29, RF-11, #46)
+
+A static document (`discoveryHandler`, `cmd/usher/discovery.go`) built
+from facts about handlers that already exist elsewhere in this binary —
+it has no logic of its own to get wrong. Every field is either a literal
+this project can back with an existing test (`response_types_supported`:
+`["code"]`, `authorize.go`'s own check; `grant_types_supported`:
+`["authorization_code", "refresh_token"]`, `token.go`'s own dispatch;
+`code_challenge_methods_supported`: `["S256"]`; `token_endpoint_auth_methods
+_supported`: `["none", "client_secret_basic", "client_secret_post"]`) or
+derived directly from another package's own allow-list rather than
+hand-typed (`id_token_signing_alg_values_supported` from
+`pkg/tokenvalidator`'s `RS256`/`ES256` constants, RS-06).
+
+**What is deliberately absent, and why:**
+
+- No `registration_endpoint` — RF-01's clients are static configuration,
+  never dynamically registered.
+- No `introspection_endpoint` — REQUIREMENTS §3.2 names RFC 7662 as a
+  protocol surface; nothing implements it.
+- No `prompt_values_supported` or anything naming `max_age` — RF-11 names
+  both, but #47 is where either gets parsed. Advertising a capability
+  before the code behind it exists would make this document briefly
+  false the moment it was written, which is exactly what "advertises
+  only what is implemented" (this issue's own framing) rules out.
+- `scopes_supported` is `["openid"]` alone, not the longer list a
+  client's own registered `Scopes` (RF-01) might contain — `openid` is
+  the only value any part of this server treats as meaningful (Flow 2
+  step 6's own audience gate); `profile`, say, triggers nothing, so
+  claiming it here would be a capability this project does not have.
+
+No `Cache-Control: no-store`: REQUIREMENTS §7.2's own table marks
+`/.well-known/*, JWKS` `no-store: no` — a discovery document is not the
+credential response RS-26 means.
