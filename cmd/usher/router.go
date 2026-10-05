@@ -118,6 +118,7 @@ var routeGroups = map[string]routeGroup{
 	"/authorize":             authorizeGroup,
 	"/token":                 tokenGroup,
 	"/revoke":                tokenGroup,
+	"/userinfo":              userinfoGroup,
 	"/.well-known/jwks.json": jwksGroup,
 }
 
@@ -195,33 +196,43 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:           deps.Logger,
 	}
 
-	// revokeValidator is /revoke's own (#38): built over the same keyset
-	// /token signs with (deps.Keyset.AsKeySource()), the same two
-	// algorithms RS-06's allow-list permits (tokenvalidator.RS256,
-	// tokenvalidator.ES256), checking an access token's signature and
-	// claims without the audience ValidateAccessToken's own resource-
-	// server caller needs — ValidateForRevocation's whole reason for
-	// existing. New only fails on an empty allow-list, a literal two
-	// elements long here, so a non-nil err is a programming mistake in
-	// this call, not a runtime condition — template.Must's own reasoning
-	// a few lines above, applied to this construction instead.
-	revokeValidator, err := tokenvalidator.New(
+	// bearerValidator checks an access token's signature and claim set
+	// (RS-07) the same way for both of this binary's own bearer-token
+	// callers, /revoke (#38) and /userinfo (#45): built over the same
+	// keyset /token signs with (deps.Keyset.AsKeySource()), the same two
+	// algorithms RS-06's allow-list permits. Each caller still picks its
+	// own method — ValidateForRevocation for /revoke (no single
+	// audience to require, RFC 7009 §2.1's own reasoning), AccessToken
+	// for /userinfo (RS-08's userinfo audience) — the two were already
+	// methods on the same *Validator before #45 gave this a second
+	// caller to share with. New only fails on an empty allow-list, a
+	// literal two elements long here, so a non-nil err is a programming
+	// mistake in this call, not a runtime condition — template.Must's
+	// own reasoning a few lines above, applied to this construction
+	// instead.
+	bearerValidator, err := tokenvalidator.New(
 		deps.Keyset.AsKeySource(),
 		[]tokenvalidator.Algorithm{tokenvalidator.RS256, tokenvalidator.ES256},
 		tokenvalidator.WithIssuer(deps.Issuer),
 		tokenvalidator.WithClock(deps.Now),
 	)
 	if err != nil {
-		panic("router: build /revoke's tokenvalidator.Validator: " + err.Error())
+		panic("router: build the shared bearer-token tokenvalidator.Validator: " + err.Error())
 	}
 
 	revoke := &revokeHandler{
 		clients:   deps.Clients,
 		families:  deps.Families,
-		validator: revokeValidator,
+		validator: bearerValidator,
 		denylist:  deps.Denylist,
 		emitter:   deps.Emitter,
 		now:       deps.Now,
+		logger:    deps.Logger,
+	}
+
+	userinfo := &userinfoHandler{
+		validator: bearerValidator,
+		audience:  userinfoAudience(deps.Issuer),
 		logger:    deps.Logger,
 	}
 
@@ -259,6 +270,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodPost, "/revoke",
 		tokenGroup.wrap(nil, nil, revoke))
+
+	r.Method(http.MethodGet, "/userinfo",
+		userinfoGroup.wrap(nil, nil, userinfo))
 
 	r.Method(http.MethodGet, "/.well-known/jwks.json",
 		jwksGroup.wrap(nil, nil, jwks))

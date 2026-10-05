@@ -878,3 +878,33 @@ hold which) is deliberately not this package's decision — `cmd/seed`'s
 own `seedRoles` already calls `"admin"` and `"user"` provisional
 placeholders for exactly that reason. Whoever constructs the `Authorizer`
 (M6's gateway wiring) supplies the real `Permissions` map.
+
+---
+
+## 16. Flow 5 — `GET /userinfo` (RS-08, RS-26, #45)
+
+1. Extract the bearer token from `Authorization: Bearer ...`. Missing or
+   empty → 401.
+2. `tokenvalidator.ValidateAccessToken(token, userinfoAudience)` —
+   `userinfoAudience` derived from the issuer (`{issuer}/userinfo`), not a
+   separate config field: the same `*Validator` instance `/revoke` builds
+   (Flow 4), since the audience is a call-time parameter on that type, not
+   something baked into the validator itself. Fails verification (bad
+   signature, wrong `typ`, expired, or missing this audience) → 401, same
+   bare body as every other cause (RS-23/RS-25) — a caller cannot tell
+   "no token" from "wrong `typ`" from "wrong `aud`" from "expired" by
+   response shape.
+3. Respond `200` with `{"sub": Claims.Subject}` — the one claim usher's
+   own `identity.User` has anything to say about; no name, email or other
+   profile data exists anywhere in this project's `User` model to put
+   behind a scope it never asked the user to consent to.
+4. Respond with `Cache-Control: no-store` (RS-26) on both the success and
+   the 401 paths.
+
+**Where the userinfo audience comes from:** Flow 2 step 6 adds it to an
+access token's `aud` alongside the resource server's own, whenever the
+granted scope includes `openid` — never in place of the resource
+server's audience, and never for a token issued without `openid` in
+scope. A token issued for a request that never asked for `openid` is
+therefore refused here even though it is otherwise perfectly valid: aud
+mismatch, not a signature or claims-shape problem.

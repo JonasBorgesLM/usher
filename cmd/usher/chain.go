@@ -82,6 +82,18 @@ var authorizeGroup = routeGroup{name: "authorize", csrf: false, noStore: false}
 // rather than hiding it.
 var tokenGroup = routeGroup{name: "token", csrf: false, noStore: true}
 
+// userinfoGroup is REQUIREMENTS §7.2's "/userinfo" row: no CSRF (bearer
+// auth, not a cookie a double-submit model applies to), no-store (RS-26
+// — RS-08's claims about the caller's identity are exactly the kind of
+// response RS-26 means). Bearer authentication and the userinfo-audience
+// check (RS-08) are inside userinfoHandler itself, the same choice
+// tokenGroup's own comment already explains for /token's client auth and
+// /revoke's token verification — not a new middleware layer. The table's
+// "per token" rate limit is left unwired for the same reason tokenGroup
+// leaves its own unwired: no RS-/RF- id for it is cited by this group's
+// issue (#45 cites only RS-08, RS-26).
+var userinfoGroup = routeGroup{name: "userinfo", csrf: false, noStore: true}
+
 // jwksGroup is REQUIREMENTS §7.2's "/.well-known/*, JWKS" row: no CSRF, no
 // auth, and -- deliberately the opposite of every credential route above --
 // no-store does not apply. A public key set is not a credential; the whole
