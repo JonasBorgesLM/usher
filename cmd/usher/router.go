@@ -111,15 +111,16 @@ type routerDeps struct {
 // than keeping a second, independently-maintained list; chi.Walk is what
 // supplies the set of routes to check it against.
 var routeGroups = map[string]routeGroup{
-	"/login":                 browserForms,
-	"/consent":               browserForms,
-	"/healthz":               operational,
-	"/readyz":                operational,
-	"/authorize":             authorizeGroup,
-	"/token":                 tokenGroup,
-	"/revoke":                tokenGroup,
-	"/userinfo":              userinfoGroup,
-	"/.well-known/jwks.json": jwksGroup,
+	"/login":                            browserForms,
+	"/consent":                          browserForms,
+	"/healthz":                          operational,
+	"/readyz":                           operational,
+	"/authorize":                        authorizeGroup,
+	"/token":                            tokenGroup,
+	"/revoke":                           tokenGroup,
+	"/userinfo":                         userinfoGroup,
+	"/.well-known/jwks.json":            jwksGroup,
+	"/.well-known/openid-configuration": jwksGroup,
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -194,6 +195,11 @@ func newRouter(deps routerDeps) *chi.Mux {
 		consumerCacheTTL: deps.ConsumerJWKSCacheTTL,
 		now:              deps.Now,
 		logger:           deps.Logger,
+	}
+
+	discovery := &discoveryHandler{
+		issuer: deps.Issuer,
+		logger: deps.Logger,
 	}
 
 	// bearerValidator checks an access token's signature and claim set
@@ -276,6 +282,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodGet, "/.well-known/jwks.json",
 		jwksGroup.wrap(nil, nil, jwks))
+
+	r.Method(http.MethodGet, "/.well-known/openid-configuration",
+		jwksGroup.wrap(nil, nil, discovery))
 
 	return r
 }

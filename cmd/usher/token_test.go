@@ -543,6 +543,29 @@ func TestToken_ConfidentialClientCorrectSecretViaBasicAuth(t *testing.T) {
 	}
 }
 
+// TestToken_ConfidentialClientCorrectSecretViaPostBody backs discovery
+// .go's own token_endpoint_auth_methods_supported claim that
+// "client_secret_post" is a real, working option (#46), not just Basic
+// auth -- authenticateClient's own `postSecret :=
+// r.PostForm.Get("client_secret")` path, exercised directly rather than
+// only read from the source.
+func TestToken_ConfidentialClientCorrectSecretViaPostBody(t *testing.T) {
+	client := confidentialTestClient("correct-secret")
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+	seedCode(t, deps, testTokenCode, testClientID, testRedirectURI, []string{"openid"})
+
+	form := validTokenForm()
+	form.Set("client_secret", "correct-secret")
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(form, "", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("correct secret over the POST body = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 // TestToken_PublicClientNeedsNoSecret confirms RS-16's other half: a
 // public client authenticates with no secret at all -- PKCE alone stands
 // in for one.

@@ -231,6 +231,25 @@ func TestAuthorize_MissingOrPlainPKCERejected(t *testing.T) {
 	})
 }
 
+// TestAuthorize_UnsupportedResponseTypeRejected backs discovery.go's own
+// response_types_supported: ["code"] claim (#46) -- a value other than
+// "code" ("token", implicit's own response_type) must be rejected, the
+// same error-redirect shape every other RF-02 Flow 1 step 1 rejection
+// uses.
+//
+// Negative control: with the `q.Get("response_type") != "code"` check
+// removed from authorize.go, this test failed -- the request proceeded
+// all the way to the redirect-to-/login response discovery's own claim
+// says is impossible for anything but "code". Verified by hand, restored
+// before committing.
+func TestAuthorize_UnsupportedResponseTypeRejected(t *testing.T) {
+	mux := newRouter(authorizeDeps(t, testClient()))
+	q := validAuthorizeQuery()
+	q.Set("response_type", "token")
+	rec := doAuthorize(t, mux, q)
+	assertErrorRedirect(t, rec, "unsupported_response_type")
+}
+
 // assertErrorRedirect confirms rec is a redirect to testRedirectURI
 // carrying the given RFC 6749 error code, the original state, and iss.
 func assertErrorRedirect(t *testing.T, rec *httptest.ResponseRecorder, wantError string) {
