@@ -64,15 +64,20 @@ type codeJSON struct {
 	Nonce         string   `json:"nonce"`
 	Scope         []string `json:"scope"`
 	Subject       string   `json:"subject"`
-	ExpiresAt     int64    `json:"expires_at"` // Unix seconds
+	AuthTime      int64    `json:"auth_time,omitempty"` // Unix seconds; 0 if the Code carried none
+	ExpiresAt     int64    `json:"expires_at"`          // Unix seconds
 }
 
 func encodeCode(c oauth.Code) codeJSON {
-	return codeJSON{
+	j := codeJSON{
 		Value: c.Value, ClientID: c.ClientID, RedirectURI: c.RedirectURI,
 		CodeChallenge: c.CodeChallenge, Nonce: c.Nonce, Scope: c.Scope,
 		Subject: c.Subject, ExpiresAt: c.ExpiresAt.Unix(),
 	}
+	if !c.AuthTime.IsZero() {
+		j.AuthTime = c.AuthTime.Unix()
+	}
+	return j
 }
 
 func decodeCode(data string) (oauth.Code, error) {
@@ -80,11 +85,15 @@ func decodeCode(data string) (oauth.Code, error) {
 	if err := json.Unmarshal([]byte(data), &j); err != nil {
 		return oauth.Code{}, fmt.Errorf("redis: decode code: %w", err)
 	}
-	return oauth.Code{
+	c := oauth.Code{
 		Value: j.Value, ClientID: j.ClientID, RedirectURI: j.RedirectURI,
 		CodeChallenge: j.CodeChallenge, Nonce: j.Nonce, Scope: j.Scope,
 		Subject: j.Subject, ExpiresAt: time.Unix(j.ExpiresAt, 0),
-	}, nil
+	}
+	if j.AuthTime != 0 {
+		c.AuthTime = time.Unix(j.AuthTime, 0)
+	}
+	return c, nil
 }
 
 // Save implements oauth.CodeStore. SetNX, not Set: two Saves racing on the

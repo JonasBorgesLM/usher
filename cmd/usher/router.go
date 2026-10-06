@@ -151,6 +151,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 		challenges:   deps.Challenges,
 		protector:    deps.CSRFProtector,
 		emitter:      deps.Emitter,
+		issuer:       deps.Issuer,
 		idleTTL:      deps.SessionIdleTTL,
 		absoluteTTL:  deps.SessionAbsoluteTTL,
 		now:          deps.Now,

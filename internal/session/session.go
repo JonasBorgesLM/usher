@@ -20,8 +20,11 @@ type Challenge struct {
 	Scope         []string
 	State         string
 	CodeChallenge string
-	Nonce         string // "" if the request carried none (RS-30)
-	Subject       string // "" until login succeeds
+	Nonce         string         // "" if the request carried none (RS-30)
+	Prompt        string         // "", "none" or "login" -- /authorize already rejects anything else (RF-11)
+	MaxAge        *time.Duration // nil if the request carried none (RF-11)
+	Subject       string         // "" until login succeeds
+	AuthTime      time.Time      // set together with Subject (ADR-0020); zero until then
 	ExpiresAt     time.Time
 }
 
@@ -37,9 +40,15 @@ type ChallengeStore interface {
 	// same challenge across a GET/POST pair before the flow completes.
 	Get(ctx context.Context, id string) (Challenge, error)
 
-	// SetSubject records the authenticated subject on a still-pending
-	// challenge, between login succeeding and /consent.
-	SetSubject(ctx context.Context, id, subject string) error
+	// SetAuthenticated records the authenticated subject and the moment
+	// that authentication happened on a still-pending challenge, between
+	// login succeeding (or a prior session being silently reused, ADR-0020)
+	// and /consent. authTime becomes the id_token's own auth_time
+	// (oauth.Code, RF-11) -- it is the browser session's own AuthTime, not
+	// necessarily "now": a silent reuse passes through the session's
+	// original login time unchanged, exactly the value RF-11's max_age
+	// check at /login already measured it against.
+	SetAuthenticated(ctx context.Context, id, subject string, authTime time.Time) error
 
 	// Consume atomically deletes and returns c — single-use (RS-05), the
 	// same shape as oauth.CodeStore.Consume. Called once, when /authorize is

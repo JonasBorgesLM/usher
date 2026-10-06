@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/JonasBorgesLM/usher/internal/identity"
 )
@@ -229,6 +230,133 @@ func TestAuthorize_MissingOrPlainPKCERejected(t *testing.T) {
 		rec := doAuthorize(t, mux, q)
 		assertErrorRedirect(t, rec, "invalid_request")
 	})
+}
+
+// TestAuthorize_PromptNoneAndLoginAccepted_StoredOnChallenge is RF-11's
+// own first done-when (ADR-0020): both supported prompt values reach
+// /login rather than being rejected, and the resulting Challenge carries
+// the value unchanged -- /login (not this file) is where it is actually
+// acted on.
+func TestAuthorize_PromptNoneAndLoginAccepted_StoredOnChallenge(t *testing.T) {
+	for _, prompt := range []string{"none", "login"} {
+		t.Run(prompt, func(t *testing.T) {
+			deps := authorizeDeps(t, testClient())
+			mux := newRouter(deps)
+			q := validAuthorizeQuery()
+			q.Set("prompt", prompt)
+			rec := doAuthorize(t, mux, q)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("prompt=%s = %d, want %d (redirect to /login), body: %s", prompt, rec.Code, http.StatusFound, rec.Body.String())
+			}
+			loc, err := url.Parse(rec.Header().Get("Location"))
+			if err != nil {
+				t.Fatalf("parse Location: %v", err)
+			}
+			id := loc.Query().Get("login_challenge")
+			if id == "" {
+				t.Fatal("Location has no login_challenge")
+			}
+			c, err := deps.Challenges.Get(context.Background(), id)
+			if err != nil {
+				t.Fatalf("Get challenge: %v", err)
+			}
+			if c.Prompt != prompt {
+				t.Errorf("stored Prompt = %q, want %q", c.Prompt, prompt)
+			}
+		})
+	}
+}
+
+// TestAuthorize_InvalidPromptRejected is RF-11's own done-when: a prompt
+// value other than "none" or "login" -- including a combination OIDC
+// Core would otherwise permit, like "login consent" -- is invalid_request
+// (ADR-0020 deliberately narrows prompt to a single supported value, not
+// the general space-delimited list).
+//
+// Negative control: with the `prompt != "none" && prompt != "login"` half
+// of the check removed from authorize.go, this test failed -- the request
+// was accepted and redirected to /login. Verified by hand, restored
+// before committing.
+func TestAuthorize_InvalidPromptRejected(t *testing.T) {
+	for _, prompt := range []string{"consent", "select_account", "login consent", "None"} {
+		t.Run(prompt, func(t *testing.T) {
+			mux := newRouter(authorizeDeps(t, testClient()))
+			q := validAuthorizeQuery()
+			q.Set("prompt", prompt)
+			rec := doAuthorize(t, mux, q)
+			assertErrorRedirect(t, rec, "invalid_request")
+		})
+	}
+}
+
+// TestAuthorize_MaxAgeStoredOnChallenge is RF-11's max_age half: a valid
+// non-negative integer is accepted and stored as the equivalent duration.
+func TestAuthorize_MaxAgeStoredOnChallenge(t *testing.T) {
+	deps := authorizeDeps(t, testClient())
+	mux := newRouter(deps)
+	q := validAuthorizeQuery()
+	q.Set("max_age", "3600")
+	rec := doAuthorize(t, mux, q)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("max_age=3600 = %d, want %d, body: %s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	c, err := deps.Challenges.Get(context.Background(), loc.Query().Get("login_challenge"))
+	if err != nil {
+		t.Fatalf("Get challenge: %v", err)
+	}
+	want := time.Hour
+	if c.MaxAge == nil || *c.MaxAge != want {
+		t.Errorf("stored MaxAge = %v, want %s", c.MaxAge, want)
+	}
+}
+
+// TestAuthorize_NoMaxAgeStoresNilNotZero guards the distinction RF-11
+// itself depends on: a request that never asked for max_age must not be
+// indistinguishable from one that asked for max_age=0 ("always
+// re-authenticate") -- the first means /login's own max_age check never
+// applies at all, the second means it always forces fresh authentication.
+func TestAuthorize_NoMaxAgeStoresNilNotZero(t *testing.T) {
+	deps := authorizeDeps(t, testClient())
+	mux := newRouter(deps)
+	rec := doAuthorize(t, mux, validAuthorizeQuery())
+
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	c, err := deps.Challenges.Get(context.Background(), loc.Query().Get("login_challenge"))
+	if err != nil {
+		t.Fatalf("Get challenge: %v", err)
+	}
+	if c.MaxAge != nil {
+		t.Errorf("stored MaxAge = %v, want nil (request carried none)", c.MaxAge)
+	}
+}
+
+// TestAuthorize_InvalidMaxAgeRejected is RF-11's own done-when, the
+// invalid half: a non-integer or negative max_age is invalid_request,
+// never silently clamped or ignored.
+//
+// Negative control: with the `parseErr != nil || seconds < 0` check
+// replaced by `parseErr != nil` alone, the "-5" sub-test failed -- a
+// negative max_age was accepted and stored as a negative duration.
+// Verified by hand, restored before committing.
+func TestAuthorize_InvalidMaxAgeRejected(t *testing.T) {
+	for _, maxAge := range []string{"not-a-number", "-5", "3.5"} {
+		t.Run(maxAge, func(t *testing.T) {
+			mux := newRouter(authorizeDeps(t, testClient()))
+			q := validAuthorizeQuery()
+			q.Set("max_age", maxAge)
+			rec := doAuthorize(t, mux, q)
+			assertErrorRedirect(t, rec, "invalid_request")
+		})
+	}
 }
 
 // TestAuthorize_UnsupportedResponseTypeRejected backs discovery.go's own

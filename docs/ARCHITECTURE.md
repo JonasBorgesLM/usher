@@ -685,31 +685,50 @@ config error into an open redirect (RS-28), and it compiles either way.
 3. From here, `redirect_uri` is verified and every further problem is
    reported *to it*, per RFC 6749 §4.1.2.1 (RS-28, step 3): `response_type
    == "code"`; `code_challenge` present with `method == "S256"` (RS-01);
-   `state` present (RS-03); requested scope ⊆ the client's `Scopes`.
-4. Build a `session.Challenge`, `ChallengeStore.Save`, redirect to
+   `state` present (RS-03); requested scope ⊆ the client's `Scopes`;
+   `prompt` is `""`, `"none"` or `"login"` — nothing else, including OIDC
+   Core's general space-delimited list (RF-11, ADR-0020); `max_age`, if
+   present, is a non-negative integer of seconds.
+4. Build a `session.Challenge` carrying `prompt`/`max_age` unchanged
+   alongside `nonce`, `ChallengeStore.Save`, redirect to
    `/login?challenge=<id>` — no other parameter in the query string (RS-05).
-5. `GET /login` renders the form under a CSP nonce (RS-36). `POST /login`
-   requires the CSRF token (RS-12a); looks up `UserStore.ByIdentifier` on the
-   canonicalized identifier (RS-35); verifies the password constant-time
-   against the real hash or, if `ok == false`, a dummy one computed at
-   startup with current parameters (RS-14) — **inside** the Argon2id
-   concurrency semaphore either way (RS-33), so the queueing time itself
-   does not distinguish the two cases.
-6. On success: **rotate the session id and the CSRF token — both, as two
-   separate calls** (RS-12b); create or refresh the `BrowserSession`
-   (RF-10, RS-31); `ChallengeStore.SetSubject`.
+5. **`GET /login` first decides whether interaction is needed at all**
+   (RF-10/RF-11, ADR-0020): it reads the browser's own session cookie
+   (`session.SessionStore`). A session that is present, that `prompt` never
+   asked to override (`"login"`), and that `max_age` (if set) does not
+   consider stale is reused silently — skip to step 6 with that session's
+   own subject and `AuthTime`, no form rendered. Otherwise: `prompt ==
+   "none"` redirects `login_required` to the client (same shape as step
+   11); anything else renders the form under a CSP nonce (RS-36). `POST
+   /login` requires the CSRF token (RS-12a); looks up
+   `UserStore.ByIdentifier` on the canonicalized identifier (RS-35);
+   verifies the password constant-time against the real hash or, if `ok ==
+   false`, a dummy one computed at startup with current parameters
+   (RS-14) — **inside** the Argon2id concurrency semaphore either way
+   (RS-33), so the queueing time itself does not distinguish the two
+   cases.
+6. On a fresh password login: **rotate the session id and the CSRF
+   token — both, as two separate calls** (RS-12b); create or refresh the
+   `BrowserSession` (RF-10, RS-31) with `AuthTime = now`. Either way (fresh
+   login or step 5's silent reuse): `ChallengeStore.SetAuthenticated`
+   records the subject and that `AuthTime` on the challenge — the value
+   Flow 2 step 6 later signs into the `id_token`'s own `auth_time` (RF-11).
 7. Redirect to `/consent?challenge=<id>`.
 8. `GET /consent`: if `ConsentStore.Granted` already covers the requested
-   scope, skip to step 10 (RF-13). Otherwise render the consent form —
-   client name and requested scopes passed through `html/template`'s default
-   escaping, never `template.HTML` (RS-36) — behind the same CSRF
-   requirement (RS-12a).
+   scope, skip to step 10 (RF-13). Otherwise, if `prompt == "none"`
+   (ADR-0020): redirect `consent_required` to the client — consent is
+   genuinely needed and prompt forbids asking for it. Otherwise render the
+   consent form — client name and requested scopes passed through
+   `html/template`'s default escaping, never `template.HTML` (RS-36) —
+   behind the same CSRF requirement (RS-12a).
 9. On approval: `ConsentStore.Grant` with the union of any prior grant and
    the newly requested scope.
 10. `ChallengeStore.Consume` (single-use, RS-05) to get the final
     `Challenge`. Generate a fresh `Code` from `crypto/rand`; `CodeStore.Save`
     bound to `client_id`, `redirect_uri`, `code_challenge`, `nonce` (RS-04,
-    RS-30).
+    RS-30) and carrying `AuthTime` unchanged from the challenge (RF-11) —
+    `prompt`/`max_age` themselves are spent by this point and go no
+    further; only the `AuthTime` they already governed does.
 11. Redirect to `redirect_uri` with `code`, the original `state` unchanged
     (RS-03), and `iss` (RS-29).
 
@@ -737,9 +756,12 @@ config error into an open redirect (RS-28), and it compiles either way.
    key, `typ: id_token`, `aud` = the client alone (never the resource
    server's audience — RS-08, RF-03, RF-11), `nonce` echoed unchanged from
    the `Code` when one was bound at `/authorize`, omitted otherwise
-   (RS-30). This typ header, not the differing `aud`, is what makes
-   Flow 1's gateway reject an id_token presented as a bearer credential —
-   `aud` is never inspected if `typ` already failed.
+   (RS-30), and `auth_time` from the `Code`'s own `AuthTime` (RF-11, #47,
+   ADR-0020) — omitted only for a `Code` built without one, which no real
+   `/login`→`/consent` flow produces any more. This typ header, not the
+   differing `aud`, is what makes Flow 1's gateway reject an id_token
+   presented as a bearer credential — `aud` is never inspected if `typ`
+   already failed.
 7. If the client's grant types include `refresh_token`:
    `FamilyStore.CreateFamily` with a fresh opaque token (RS-10).
 8. `CodeStore.Tombstone(code, familyID, ttl=maxAccessTokenTTL)` — **after**

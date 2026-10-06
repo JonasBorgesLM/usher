@@ -70,16 +70,28 @@ type challengeJSON struct {
 	State         string   `json:"state"`
 	CodeChallenge string   `json:"code_challenge"`
 	Nonce         string   `json:"nonce"`
+	Prompt        string   `json:"prompt"`
+	MaxAgeSeconds *int64   `json:"max_age_seconds,omitempty"` // nil if the request carried none (RF-11)
 	Subject       string   `json:"subject"`
-	ExpiresAt     int64    `json:"expires_at"` // Unix seconds
+	AuthTime      int64    `json:"auth_time,omitempty"` // Unix seconds; 0 until Subject is set
+	ExpiresAt     int64    `json:"expires_at"`          // Unix seconds
 }
 
 func encodeChallenge(c session.Challenge) challengeJSON {
-	return challengeJSON{
+	j := challengeJSON{
 		ID: c.ID, ClientID: c.ClientID, RedirectURI: c.RedirectURI,
 		Scope: c.Scope, State: c.State, CodeChallenge: c.CodeChallenge,
-		Nonce: c.Nonce, Subject: c.Subject, ExpiresAt: c.ExpiresAt.Unix(),
+		Nonce: c.Nonce, Prompt: c.Prompt, Subject: c.Subject,
+		ExpiresAt: c.ExpiresAt.Unix(),
 	}
+	if c.MaxAge != nil {
+		seconds := int64(*c.MaxAge / time.Second)
+		j.MaxAgeSeconds = &seconds
+	}
+	if !c.AuthTime.IsZero() {
+		j.AuthTime = c.AuthTime.Unix()
+	}
+	return j
 }
 
 func decodeChallenge(data string) (session.Challenge, error) {
@@ -87,11 +99,20 @@ func decodeChallenge(data string) (session.Challenge, error) {
 	if err := json.Unmarshal([]byte(data), &j); err != nil {
 		return session.Challenge{}, fmt.Errorf("redis: decode challenge: %w", err)
 	}
-	return session.Challenge{
+	c := session.Challenge{
 		ID: j.ID, ClientID: j.ClientID, RedirectURI: j.RedirectURI,
 		Scope: j.Scope, State: j.State, CodeChallenge: j.CodeChallenge,
-		Nonce: j.Nonce, Subject: j.Subject, ExpiresAt: time.Unix(j.ExpiresAt, 0),
-	}, nil
+		Nonce: j.Nonce, Prompt: j.Prompt, Subject: j.Subject,
+		ExpiresAt: time.Unix(j.ExpiresAt, 0),
+	}
+	if j.MaxAgeSeconds != nil {
+		d := time.Duration(*j.MaxAgeSeconds) * time.Second
+		c.MaxAge = &d
+	}
+	if j.AuthTime != 0 {
+		c.AuthTime = time.Unix(j.AuthTime, 0)
+	}
+	return c, nil
 }
 
 // Save implements session.ChallengeStore. The Redis key's own TTL is a
@@ -136,15 +157,17 @@ func (s *ChallengeStore) Get(ctx context.Context, id string) (session.Challenge,
 	return c, nil
 }
 
-// SetSubject implements session.ChallengeStore: records the authenticated
-// subject on a still-pending, still-valid challenge. Reuses Get's own
-// existence-and-expiry check rather than duplicating it.
-func (s *ChallengeStore) SetSubject(ctx context.Context, id, subject string) error {
+// SetAuthenticated implements session.ChallengeStore: records the
+// authenticated subject and its auth_time on a still-pending, still-valid
+// challenge. Reuses Get's own existence-and-expiry check rather than
+// duplicating it.
+func (s *ChallengeStore) SetAuthenticated(ctx context.Context, id, subject string, authTime time.Time) error {
 	c, err := s.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	c.Subject = subject
+	c.AuthTime = authTime
 	return s.Save(ctx, c)
 }
 

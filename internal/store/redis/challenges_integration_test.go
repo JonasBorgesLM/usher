@@ -48,6 +48,47 @@ func TestChallengeStore_SaveAndGet_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestChallengeStore_PromptAndMaxAge_RoundTrip is #47's own addition:
+// Prompt and MaxAge survive a real Redis round trip, including the "no
+// max_age at all" case, which must come back nil rather than a zero
+// duration (RF-11: a request that never asked for max_age is not the
+// same as one that asked for max_age=0, "always re-authenticate").
+func TestChallengeStore_PromptAndMaxAge_RoundTrip(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	store := newTestChallengeStore(t, clock)
+	ctx := context.Background()
+
+	withMaxAge := testChallenge(clock, "challenge-with-max-age", 5*time.Minute)
+	withMaxAge.Prompt = "login"
+	maxAge := 30 * time.Second
+	withMaxAge.MaxAge = &maxAge
+	if err := store.Save(ctx, withMaxAge); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Get(ctx, "challenge-with-max-age")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Prompt != "login" {
+		t.Errorf("Prompt = %q, want %q", got.Prompt, "login")
+	}
+	if got.MaxAge == nil || *got.MaxAge != maxAge {
+		t.Errorf("MaxAge = %v, want %s", got.MaxAge, maxAge)
+	}
+
+	withoutMaxAge := testChallenge(clock, "challenge-without-max-age", 5*time.Minute)
+	if err := store.Save(ctx, withoutMaxAge); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got2, err := store.Get(ctx, "challenge-without-max-age")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got2.MaxAge != nil {
+		t.Errorf("MaxAge = %v, want nil (request carried none)", got2.MaxAge)
+	}
+}
+
 // TestChallengeStore_ReplayAfterUseRejected is the issue's first
 // done-when: Consume is single-use, and a second Consume of the same id
 // is rejected rather than returning the challenge again.
@@ -107,7 +148,7 @@ func TestChallengeStore_ExpiresAtItsLifetime(t *testing.T) {
 	}
 }
 
-func TestChallengeStore_SetSubject(t *testing.T) {
+func TestChallengeStore_SetAuthenticated(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	store := newTestChallengeStore(t, clock)
 	ctx := context.Background()
@@ -116,8 +157,9 @@ func TestChallengeStore_SetSubject(t *testing.T) {
 	if err := store.Save(ctx, c); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if err := store.SetSubject(ctx, "challenge-1", "alice@example.com"); err != nil {
-		t.Fatalf("SetSubject: %v", err)
+	authTime := clock.now()
+	if err := store.SetAuthenticated(ctx, "challenge-1", "alice@example.com", authTime); err != nil {
+		t.Fatalf("SetAuthenticated: %v", err)
 	}
 
 	got, err := store.Get(ctx, "challenge-1")
@@ -127,18 +169,25 @@ func TestChallengeStore_SetSubject(t *testing.T) {
 	if got.Subject != "alice@example.com" {
 		t.Errorf("Subject = %q, want %q", got.Subject, "alice@example.com")
 	}
-	// The rest of the challenge survives SetSubject unchanged.
+	// Unix-seconds precision, the same encoding every other time.Time
+	// field in this store uses (ExpiresAt, Nonce's own expiry) -- .Equal
+	// would fail on authTime's sub-second component, which the round
+	// trip never claimed to preserve.
+	if got.AuthTime.Unix() != authTime.Unix() {
+		t.Errorf("AuthTime = %s, want %s", got.AuthTime, authTime)
+	}
+	// The rest of the challenge survives SetAuthenticated unchanged.
 	if got.ClientID != c.ClientID || got.State != c.State {
-		t.Errorf("SetSubject altered other fields: got %+v", got)
+		t.Errorf("SetAuthenticated altered other fields: got %+v", got)
 	}
 }
 
-func TestChallengeStore_SetSubjectOnUnknownChallengeFails(t *testing.T) {
+func TestChallengeStore_SetAuthenticatedOnUnknownChallengeFails(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	store := newTestChallengeStore(t, clock)
 
-	if err := store.SetSubject(context.Background(), "never-existed", "alice@example.com"); !errors.Is(err, session.ErrChallengeNotFound) {
-		t.Fatalf("SetSubject on an unknown challenge = %v, want ErrChallengeNotFound", err)
+	if err := store.SetAuthenticated(context.Background(), "never-existed", "alice@example.com", clock.now()); !errors.Is(err, session.ErrChallengeNotFound) {
+		t.Fatalf("SetAuthenticated on an unknown challenge = %v, want ErrChallengeNotFound", err)
 	}
 }
 

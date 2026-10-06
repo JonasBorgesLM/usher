@@ -99,11 +99,12 @@ type accessTokenClaims struct {
 // claim, not an empty-string one, matches what OIDC Core itself expects
 // back.
 //
-// auth_time (RF-11, under max_age) is deliberately not a field here yet:
-// nothing before #47 parses max_age from the authorization request at
-// all, so there is no value this struct could ever carry that would mean
-// anything -- adding the claim now would be an untestable, dead field.
-// #47 is where max_age itself becomes real, and where this claim belongs.
+// auth_time (RF-11, #47, ADR-0020) is the browser session's own AuthTime,
+// carried unchanged from oauth.Code -- "" (omitted, not a zero-looking
+// Unix epoch 0) only for a Code built without one, which every real
+// /login->/consent flow now sets regardless of whether this particular
+// request asked for max_age (OIDC Core allows auth_time whenever useful,
+// not only when max_age was requested).
 type idTokenClaims struct {
 	Issuer    string   `json:"iss"`
 	Subject   string   `json:"sub"`
@@ -111,6 +112,7 @@ type idTokenClaims struct {
 	ExpiresAt int64    `json:"exp"`
 	IssuedAt  int64    `json:"iat"`
 	Nonce     string   `json:"nonce,omitempty"`
+	AuthTime  int64    `json:"auth_time,omitempty"`
 }
 
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +179,7 @@ func (h *tokenHandler) handleAuthorizationCode(w http.ResponseWriter, r *http.Re
 	// itself asked for and the user consented to.
 	var idToken string
 	if slices.Contains(issued.Scope, "openid") {
-		signed, err := h.issueIDToken(client, issued.Subject, issued.Nonce)
+		signed, err := h.issueIDToken(client, issued.Subject, issued.Nonce, issued.AuthTime)
 		if err != nil {
 			h.logger.ErrorContext(r.Context(), "token: issue id token", "error", err)
 			h.writeError(w, http.StatusInternalServerError, "server_error")
@@ -337,7 +339,7 @@ func (h *tokenHandler) issueAccessToken(client identity.Client, subject string, 
 // check exists to catch even if it were made. nonce is echoed unchanged
 // (RS-30) from whatever ConsumeCode returned on the Code it came from;
 // "" omits the claim entirely rather than sending an empty one.
-func (h *tokenHandler) issueIDToken(client identity.Client, subject, nonce string) ([]byte, error) {
+func (h *tokenHandler) issueIDToken(client identity.Client, subject, nonce string, authTime time.Time) ([]byte, error) {
 	key, err := h.keyset.Signing(h.now())
 	if err != nil {
 		return nil, fmt.Errorf("resolve signing key: %w", err)
@@ -350,6 +352,9 @@ func (h *tokenHandler) issueIDToken(client identity.Client, subject, nonce strin
 		ExpiresAt: now.Add(h.accessTokenTTL).Unix(),
 		IssuedAt:  now.Unix(),
 		Nonce:     nonce,
+	}
+	if !authTime.IsZero() {
+		claims.AuthTime = authTime.Unix()
 	}
 	return signJWT(key, "id_token", claims)
 }

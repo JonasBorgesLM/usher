@@ -102,12 +102,13 @@ func (f *fakeChallengeStore) Get(_ context.Context, id string) (session.Challeng
 	return c, nil
 }
 
-func (f *fakeChallengeStore) SetSubject(_ context.Context, id, subject string) error {
+func (f *fakeChallengeStore) SetAuthenticated(_ context.Context, id, subject string, authTime time.Time) error {
 	c, ok := f.challenges[id]
 	if !ok {
 		return session.ErrChallengeNotFound
 	}
 	c.Subject = subject
+	c.AuthTime = authTime
 	f.challenges[id] = c
 	return nil
 }
@@ -601,5 +602,226 @@ func TestLoginRoute_EmitsRateLimitedEvent(t *testing.T) {
 	}
 	if rateLimited[0].Outcome != audit.OutcomeFailure {
 		t.Errorf("EventRateLimited outcome = %q, want %q", rateLimited[0].Outcome, audit.OutcomeFailure)
+	}
+}
+
+// seedPendingChallenge saves a Challenge directly into deps.Challenges
+// with no Subject -- "a client reached /authorize, but login has not
+// happened yet" -- the state /login's own GET handler must decide what
+// to do about (ADR-0020). prompt and maxAge are the two fields this
+// decision depends on; every other field mirrors seedChallenge
+// (consent_test.go) so assertErrorRedirect's own hardcoded expectations
+// (state "xyz123") keep working unchanged.
+func seedPendingChallenge(t *testing.T, deps routerDeps, id, clientID, prompt string, maxAge *time.Duration) session.Challenge {
+	t.Helper()
+	c := session.Challenge{
+		ID:            id,
+		ClientID:      clientID,
+		RedirectURI:   testRedirectURI,
+		Scope:         []string{"openid"},
+		State:         "xyz123",
+		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		Prompt:        prompt,
+		MaxAge:        maxAge,
+		ExpiresAt:     deps.Now().Add(5 * time.Minute),
+	}
+	if err := deps.Challenges.Save(context.Background(), c); err != nil {
+		t.Fatalf("seed pending challenge: %v", err)
+	}
+	return c
+}
+
+// seedSession saves a BrowserSession directly into deps.Sessions,
+// simulating "this browser already has a live AS session" without going
+// through a real login. rawID is both the fake store's key and the
+// value sessionCookie attaches to a request -- the fake, unlike the real
+// Redis store, does not hash it (router_test.go's own fakeSessionStore),
+// which is exactly what makes this useful as a test double for
+// SessionStore.Get(rawID).
+func seedSession(t *testing.T, deps routerDeps, rawID, subject string, authTime time.Time) {
+	t.Helper()
+	sess := session.BrowserSession{
+		ID: rawID, Subject: subject, AuthTime: authTime,
+		IdleUntil: deps.Now().Add(time.Hour), ExpiresAt: deps.Now().Add(24 * time.Hour),
+	}
+	if err := deps.Sessions.Save(context.Background(), sess); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+}
+
+func sessionCookie(rawID string) *http.Cookie {
+	// #nosec G124 -- this is a cookie attached to an outgoing *test
+	// request*, simulating what a browser already holding usher's
+	// session cookie would send back; Secure/HttpOnly/SameSite are
+	// response-only attributes (NewSessionCookie, internal/session
+	// /cookie.go, is what sets them on the real Set-Cookie) and have no
+	// meaning on a cookie a request carries.
+	return &http.Cookie{Name: session.CookieName, Value: rawID}
+}
+
+// getLoginRequest builds a raw GET /login request, optionally carrying a
+// login_challenge and any cookies -- unlike getLogin, it does not expect
+// a rendered form (several of the tests below expect a redirect
+// instead), so it does not try to extract a CSRF token.
+func getLoginRequest(challengeID string, cookies ...*http.Cookie) *http.Request {
+	target := "https://usher.test/login"
+	if challengeID != "" {
+		target += "?login_challenge=" + url.QueryEscape(challengeID)
+	}
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, target, http.NoBody)
+	req.Host = "usher.test"
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	return req
+}
+
+// TestLoginRoute_PromptNoneNoSessionGetsLoginRequired is RF-11's own
+// first done-when (ADR-0020): prompt=none with no existing session at
+// all is refused with login_required, redirected to the client -- never
+// the login form prompt=none exists specifically to suppress.
+//
+// Negative control: with the `challenge.Prompt == "none"` check removed
+// from login.go's get, this test failed -- the form rendered (status
+// 200) instead of redirecting. Verified by hand, restored before
+// committing.
+func TestLoginRoute_PromptNoneNoSessionGetsLoginRequired(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "none", nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID))
+
+	assertErrorRedirect(t, rec, "login_required")
+}
+
+// TestLoginRoute_PromptNoneValidSessionProceedsSilently is the success
+// half of the same done-when: a session that already satisfies the
+// request (no prompt=login, no exceeded max_age) skips the form entirely
+// and hands straight off to /consent, carrying the session's own subject
+// and auth_time onto the challenge.
+//
+// Negative control: with needsFreshAuthentication changed to
+// unconditionally return true, this test failed -- the response was 200
+// (the rendered form) instead of a redirect to /consent. Verified by
+// hand, restored before committing.
+func TestLoginRoute_PromptNoneValidSessionProceedsSilently(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "none", nil)
+	authTime := deps.Now().Add(-10 * time.Minute)
+	seedSession(t, deps, "raw-session-1", testIdentifier, authTime)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID, sessionCookie("raw-session-1")))
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (redirect to /consent), body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	if loc.Path != "/consent" {
+		t.Errorf("Location path = %q, want /consent", loc.Path)
+	}
+
+	got, err := deps.Challenges.Get(context.Background(), c.ID)
+	if err != nil {
+		t.Fatalf("Get challenge: %v", err)
+	}
+	if got.Subject != testIdentifier {
+		t.Errorf("challenge Subject = %q, want %q", got.Subject, testIdentifier)
+	}
+	if !got.AuthTime.Equal(authTime) {
+		t.Errorf("challenge AuthTime = %s, want the session's own %s, not a fresh one", got.AuthTime, authTime)
+	}
+}
+
+// TestLoginRoute_PromptLoginForcesFormEvenWithValidSession is RF-11's
+// second done-when: prompt=login forces re-authentication regardless of
+// an otherwise perfectly valid, unexpired session.
+//
+// Negative control: with the `challenge.Prompt == "login"` branch
+// removed from needsFreshAuthentication, this test failed -- the
+// response redirected straight to /consent instead of rendering the
+// form. Verified by hand, restored before committing.
+func TestLoginRoute_PromptLoginForcesFormEvenWithValidSession(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "login", nil)
+	seedSession(t, deps, "raw-session-1", testIdentifier, deps.Now().Add(-time.Minute))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID, sessionCookie("raw-session-1")))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (the login form), body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `name="moat.csrf"`) {
+		t.Error("prompt=login did not render the login form despite a valid session")
+	}
+}
+
+// TestLoginRoute_MaxAgeExceededForcesForm is RF-11's max_age done-when,
+// the exceeded half: a session whose AuthTime is older than max_age
+// allows is treated exactly like no session at all.
+//
+// Negative control: with the `challenge.MaxAge != nil && ...` branch
+// removed from needsFreshAuthentication, this test failed -- the
+// response redirected to /consent despite the session being well past
+// the requested max_age. Verified by hand, restored before committing.
+func TestLoginRoute_MaxAgeExceededForcesForm(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	maxAge := 30 * time.Second
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "", &maxAge)
+	seedSession(t, deps, "raw-session-1", testIdentifier, deps.Now().Add(-time.Hour))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID, sessionCookie("raw-session-1")))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (the login form), body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `name="moat.csrf"`) {
+		t.Error("an exceeded max_age did not render the login form")
+	}
+}
+
+// TestLoginRoute_MaxAgeSatisfiedProceedsSilently is the same check's
+// other side: a session authenticated well within the requested max_age
+// is accepted, silently.
+func TestLoginRoute_MaxAgeSatisfiedProceedsSilently(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	maxAge := time.Hour
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "", &maxAge)
+	seedSession(t, deps, "raw-session-1", testIdentifier, deps.Now().Add(-time.Minute))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID, sessionCookie("raw-session-1")))
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (redirect to /consent), body: %s", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+}
+
+// TestLoginRoute_NoPromptNoSessionRendersForm is the control case every
+// test above is a variation of: with neither prompt nor max_age in play
+// and no session at all, GET /login renders the form exactly as it did
+// before #47 -- this issue changes what happens when a session or a
+// prompt/max_age value is present, never the plain case.
+func TestLoginRoute_NoPromptNoSessionRendersForm(t *testing.T) {
+	deps := testDeps(t)
+	mux := newRouter(deps)
+	c := seedPendingChallenge(t, deps, "challenge-1", testClientID, "", nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getLoginRequest(c.ID))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (the login form), body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
