@@ -201,13 +201,14 @@ jobs:
 
   # -------------------------------------------------------------- fuzz ----
   #
-  # FuzzParseToken (pkg/tokenvalidator) for a bounded time every run (#31's
-  # own done-when) -- not to find a crash on every PR, but so a crash found
-  # once (here or in a contributor's longer local run) has a corpus entry
-  # that replays deterministically on every run after, forever, the same
-  # way a regression test would.
+  # One target per protocol surface with real parameter/JWT parsing behind
+  # it, each for a bounded time every run (#31's own done-when, extended to
+  # /authorize and /token by #51/REQUIREMENTS §10) -- not to find a crash on
+  # every PR, but so a crash found once (here or in a contributor's longer
+  # local run) has a corpus entry that replays deterministically on every
+  # run after, forever, the same way a regression test would.
   fuzz:
-    name: fuzz (tokenvalidator)
+    name: fuzz
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -225,6 +226,44 @@ jobs:
       - name: go test -fuzz=FuzzParseToken
         if: steps.packages.outputs.present == 'true'
         run: go test -fuzz=FuzzParseToken -fuzztime=30s ./pkg/tokenvalidator/...
+
+      - name: go test -fuzz=FuzzAuthorize
+        if: steps.packages.outputs.present == 'true'
+        run: go test -fuzz=FuzzAuthorize -fuzztime=30s ./cmd/usher/...
+
+      - name: go test -fuzz=FuzzToken
+        if: steps.packages.outputs.present == 'true'
+        run: go test -fuzz=FuzzToken -fuzztime=30s ./cmd/usher/...
+
+  # ------------------------------------------------------ README examples ----
+  #
+  # The commands under README.md's own "## Testing" heading, extracted and
+  # run verbatim (#51/REQUIREMENTS §10's own "the first snippet a visitor
+  # copies must compile") -- one of them needs real Postgres and Redis via
+  # testcontainers, the same guarantee the integration job's own comment
+  # already documents for this runner.
+  readme-examples:
+    name: README examples run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+
+      - name: Docker is available (one example needs testcontainers)
+        run: docker info
+
+      - name: Are there Go packages yet?
+        id: packages
+        run: |
+          list="$(go list ./...)" || exit 1
+          echo "present=$([ -n "$list" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: ./.github/scripts/check-readme-examples.sh
+        if: steps.packages.outputs.present == 'true'
+        run: ./.github/scripts/check-readme-examples.sh
 
   # ---------------------------------------------------- ADR immutability ----
   #
@@ -297,7 +336,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: always()
-    needs: [build, lint, govulncheck, guards, integration, fuzz, adr-immutability, commits, dependency-review]
+    needs: [build, lint, govulncheck, guards, integration, fuzz, readme-examples, adr-immutability, commits, dependency-review]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

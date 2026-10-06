@@ -33,7 +33,7 @@ const (
 
 type fakeUserStore struct{ users map[string]identity.User }
 
-func newFakeUserStore(t *testing.T) *fakeUserStore {
+func newFakeUserStore(t testing.TB) *fakeUserStore {
 	t.Helper()
 	hash, err := identity.HashPassword(testPassword, weakParams)
 	if err != nil {
@@ -166,7 +166,11 @@ func (f *fakeCodeStore) TombstonedFamily(_ context.Context, value string) (famil
 // are proven-elsewhere business logic over Redis-backed interfaces
 // (internal/session's own tests, #19/#20); what this file tests is the
 // router's own composition, not the stores.
-func testDeps(t *testing.T) routerDeps {
+//
+// testing.TB, not *testing.T: FuzzAuthorize and FuzzToken (#51) share
+// this same fixture construction from inside a *testing.F, which
+// *testing.T itself cannot stand in for.
+func testDeps(t testing.TB) routerDeps {
 	t.Helper()
 	hasher, err := identity.NewHasher(4, time.Second, weakParams, 1<<30)
 	if err != nil {
