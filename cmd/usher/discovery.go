@@ -6,14 +6,13 @@
 // which is deliberate: a discovery document that could itself diverge
 // from the server it describes would be worse than no document.
 //
-// Two omissions are as load-bearing as what is present: no `prompt` or
-// `max_age` capability is advertised (RF-11 names both, but #47 is where
-// either gets parsed -- nothing before it exists to advertise), and
-// `client_credentials` is Phase 8, not M7 (REQUIREMENTS §3.1) -- neither
-// appears below, the same "advertise only what is implemented" rule
-// `grant_types_supported` and `response_types_supported` both follow for
-// `implicit`/`password` (dropped from OAuth 2.1 entirely, REQUIREMENTS
-// §3.1, never a candidate).
+// What is absent matters as much as what is present: `implicit` and
+// `password` never appear in `grant_types_supported` or
+// `response_types_supported` -- both dropped from OAuth 2.1 before this
+// project started (REQUIREMENTS §3.1), never a candidate. OIDC Discovery
+// 1.0 itself has no metadata field for `prompt` or `max_age` support
+// (RF-11, #47/#99) -- there is nothing to add here for either, not an
+// omission.
 package main
 
 import (
@@ -64,12 +63,12 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// "code" only: authorize.go's own response_type check (RF-02 Flow
 		// 1 step 1) rejects anything else with unsupported_response_type.
 		ResponseTypesSupported: []string{"code"},
-		// authorization_code and refresh_token only: token.go's own
-		// grant_type dispatch rejects anything else with
-		// unsupported_grant_type -- implicit and password were removed
-		// from OAuth 2.1 before this project started (REQUIREMENTS
-		// §3.1) and client_credentials is Phase 8, not built yet.
-		GrantTypesSupported: []string{"authorization_code", "refresh_token"},
+		// authorization_code, refresh_token and client_credentials
+		// (#49) only: token.go's own grant_type dispatch rejects
+		// anything else with unsupported_grant_type -- implicit and
+		// password were removed from OAuth 2.1 before this project
+		// started (REQUIREMENTS §3.1).
+		GrantTypesSupported: []string{"authorization_code", "refresh_token", "client_credentials"},
 		// "public": sub is the raw subject (the authenticated user's own
 		// id), identical across every client -- never pairwise.
 		SubjectTypesSupported: []string{"public"},

@@ -653,7 +653,10 @@ func TestToken_UnsupportedGrantType(t *testing.T) {
 	mux := newRouter(deps)
 
 	form := validTokenForm()
-	form.Set("grant_type", "client_credentials")
+	// password (ROPC): dropped from OAuth 2.1 before this project
+	// started (REQUIREMENTS §3.1), never a candidate -- client_credentials
+	// used to be this test's own example, until #49 made it real.
+	form.Set("grant_type", "password")
 
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, postToken(form, "", ""))
@@ -663,6 +666,173 @@ func TestToken_UnsupportedGrantType(t *testing.T) {
 	}
 	if rec.Body.String() != `{"error":"unsupported_grant_type"}`+"\n" {
 		t.Errorf("body = %q, want the fixed unsupported_grant_type shape", rec.Body.String())
+	}
+}
+
+// clientCredentialsTestClient is confidentialTestClient registered for
+// the grant itself -- testClient()'s own GrantTypes is
+// ["authorization_code"] only, and #49's own second done-when (a client
+// not registered for client_credentials gets unauthorized_client) needs
+// a fixture that genuinely has it, not one missing it by omission.
+func clientCredentialsTestClient(secret string) identity.Client {
+	c := confidentialTestClient(secret)
+	c.GrantTypes = []string{"client_credentials"}
+	c.Scopes = []string{"read", "write"}
+	c.Audiences = []string{"https://rs.example"}
+	return c
+}
+
+// clientCredentialsForm carries no client_id: every caller below
+// authenticates over Basic auth instead (postToken's own clientID/secret
+// params), the same "Basic carries it; present in both is #2.3.1's
+// ambiguity" reasoning confidentialTestClient's own Basic-auth test
+// already follows -- except the public-client test, which has no secret
+// to put there and sets client_id on the form itself.
+func clientCredentialsForm(scope string) url.Values {
+	form := url.Values{"grant_type": {"client_credentials"}}
+	if scope != "" {
+		form.Set("scope", scope)
+	}
+	return form
+}
+
+// TestToken_ClientCredentials_GoldenPath is #49's own done-when made
+// concrete: a confidential client registered for the grant gets an
+// access token for itself -- sub = client.ID, aud = client.Audiences,
+// scope narrowed to what was actually requested -- with neither a
+// refresh_token nor an id_token in the response.
+func TestToken_ClientCredentials_GoldenPath(t *testing.T) {
+	client := clientCredentialsTestClient("correct-secret")
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(clientCredentialsForm("read"), testClientID, "correct-secret"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client_credentials golden path = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeTokenSuccess(t, rec)
+	if body.Scope != "read" {
+		t.Errorf("scope = %q, want %q", body.Scope, "read")
+	}
+	if body.RefreshToken != "" {
+		t.Errorf("refresh_token = %q, want empty", body.RefreshToken)
+	}
+	if body.IDToken != "" {
+		t.Errorf("id_token = %q, want empty", body.IDToken)
+	}
+
+	key := deps.Keyset.Published(deps.Now())[0]
+	pub := key.Private.Public()
+	parsed, err := jwt.Parse([]byte(body.AccessToken), jwt.WithKey(jwa.RS256(), pub), jwt.WithValidate(false))
+	if err != nil {
+		t.Fatalf("parse/verify access token: %v", err)
+	}
+	if sub, _ := parsed.Subject(); sub != testClientID {
+		t.Errorf("sub = %q, want the client's own id %q", sub, testClientID)
+	}
+	if aud, _ := parsed.Audience(); len(aud) != 1 || aud[0] != "https://rs.example" {
+		t.Errorf("aud = %v, want [https://rs.example]", aud)
+	}
+}
+
+// TestToken_ClientCredentials_PublicClientRefused is #49's own first
+// done-when: a public client has no proof of possession for this grant
+// (no PKCE, no secret) and is refused outright.
+//
+// Negative control: with the `!client.Confidential` check removed from
+// handleClientCredentials, this test failed -- the public client's
+// request succeeded with a real access token. Verified by hand, restored
+// before committing.
+func TestToken_ClientCredentials_PublicClientRefused(t *testing.T) {
+	client := clientCredentialsTestClient("unused")
+	client.Confidential = false
+	client.SecretHash = ""
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+
+	form := clientCredentialsForm("")
+	form.Set("client_id", testClientID) // no secret to carry it over Basic auth instead
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(form, "", ""))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("public client via client_credentials = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if rec.Body.String() != `{"error":"unauthorized_client"}`+"\n" {
+		t.Errorf("body = %q, want the fixed unauthorized_client shape", rec.Body.String())
+	}
+}
+
+// TestToken_ClientCredentials_NotRegisteredForGrantRefused is the same
+// refusal for a confidential client that is simply not registered for
+// this grant -- being confidential is necessary, not sufficient.
+//
+// Negative control: with the `!slices.Contains(client.GrantTypes,
+// "client_credentials")` check removed, this test failed -- a client
+// whose own registration never named this grant got a token anyway.
+// Verified by hand, restored before committing.
+func TestToken_ClientCredentials_NotRegisteredForGrantRefused(t *testing.T) {
+	client := confidentialTestClient("correct-secret") // GrantTypes: ["authorization_code"] only
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(clientCredentialsForm(""), testClientID, "correct-secret"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unregistered grant = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if rec.Body.String() != `{"error":"unauthorized_client"}`+"\n" {
+		t.Errorf("body = %q, want the fixed unauthorized_client shape", rec.Body.String())
+	}
+}
+
+// TestToken_ClientCredentials_ScopeExceedingRegistrationRejected is
+// #49's own "scopes limited to the client's registration": a scope the
+// client was never registered for is invalid_scope, the same check
+// /authorize already applies to the authorization_code grant.
+//
+// Negative control: with the `scopeSubset` call removed from
+// handleClientCredentials (the requested scope used unchecked), this
+// test failed -- a scope this client was never registered for was
+// granted anyway. Verified by hand, restored before committing.
+func TestToken_ClientCredentials_ScopeExceedingRegistrationRejected(t *testing.T) {
+	client := clientCredentialsTestClient("correct-secret") // Scopes: ["read", "write"]
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(clientCredentialsForm("admin"), testClientID, "correct-secret"))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("unregistered scope = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if rec.Body.String() != `{"error":"invalid_scope"}`+"\n" {
+		t.Errorf("body = %q, want the fixed invalid_scope shape", rec.Body.String())
+	}
+}
+
+// TestToken_ClientCredentials_NoIDTokenEvenWithOpenIDScope documents
+// handleClientCredentials's own choice explicitly: this grant never
+// calls issueIDToken, regardless of what the client's registered scope
+// allows -- there is no user here for an id_token to describe.
+func TestToken_ClientCredentials_NoIDTokenEvenWithOpenIDScope(t *testing.T) {
+	client := clientCredentialsTestClient("correct-secret")
+	client.Scopes = append(client.Scopes, "openid")
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(clientCredentialsForm("openid"), testClientID, "correct-secret"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client_credentials with openid scope = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeTokenSuccess(t, rec)
+	if body.IDToken != "" {
+		t.Errorf("id_token = %q, want empty -- client_credentials has no user to describe one", body.IDToken)
 	}
 }
 

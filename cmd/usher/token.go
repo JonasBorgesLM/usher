@@ -122,7 +122,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantType := r.PostForm.Get("grant_type")
-	if grantType != "authorization_code" && grantType != "refresh_token" {
+	if grantType != "authorization_code" && grantType != "refresh_token" && grantType != "client_credentials" {
 		h.writeError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
@@ -143,6 +143,8 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleAuthorizationCode(w, r, client)
 	case "refresh_token":
 		h.handleRefreshToken(w, r, client)
+	case "client_credentials":
+		h.handleClientCredentials(w, r, client)
 	}
 }
 
@@ -294,8 +296,58 @@ func (h *tokenHandler) handleRefreshToken(w http.ResponseWriter, r *http.Request
 	h.writeSuccess(w, r, accessToken, nextRaw, "", scope)
 }
 
+// handleClientCredentials is RFC 6749 §4.4 (REQUIREMENTS §3.1, #49): no
+// resource owner at all, so the client authenticates as itself and gets a
+// token representing itself -- sub is client.ID, the conventional stand-
+// in for "there is no user here, the client is the one being
+// authorized." No PKCE, no code, no redirect_uri: none of those protect
+// anything in a grant with no browser step to intercept.
+func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, client identity.Client) {
+	// "Confidential clients only" (#49's own first done-when):
+	// authenticateClient (above, in ServeHTTP) accepts a public client
+	// unconditionally -- PKCE stands in for a secret on the grants that
+	// have one, but client_credentials has no PKCE and no other proof of
+	// possession, so a public client here would be nothing more than a
+	// bare client_id anyone could present. unauthorized_client (RFC 6749
+	// §5.2) is the fitted error: this client is real, but not authorized
+	// to use this grant.
+	if !client.Confidential {
+		h.writeError(w, http.StatusBadRequest, "unauthorized_client")
+		return
+	}
+	if !slices.Contains(client.GrantTypes, "client_credentials") {
+		h.writeError(w, http.StatusBadRequest, "unauthorized_client")
+		return
+	}
+
+	scope := splitScope(r.PostForm.Get("scope"))
+	if !scopeSubset(scope, client.Scopes) {
+		h.writeError(w, http.StatusBadRequest, "invalid_scope")
+		return
+	}
+
+	accessToken, err := h.issueAccessToken(client, client.ID, scope)
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "token: issue access token", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "server_error")
+		return
+	}
+
+	// No refresh_token (#49's own second done-when): this grant has no
+	// issuance path for one at all, unlike authorization_code's
+	// conditional one -- the client can always get a fresh access token
+	// by presenting its own credentials again, which is what a refresh
+	// token would buy it here. No id_token either, even if this client's
+	// registered Scopes happens to include "openid": there is no user to
+	// describe one on behalf of, and this handler never calls
+	// issueIDToken regardless of scope.
+	h.writeSuccess(w, r, accessToken, "", "", scope)
+}
+
 // issueAccessToken signs a fresh access token for subject under client,
-// shared by both grants (RF-02 Flow 2 step 5 and RF-04 Flow 3 step 7).
+// shared by all three grants (RF-02 Flow 2 step 5, RF-04 Flow 3 step 7,
+// and client_credentials, #49, where subject is client.ID rather than an
+// end user).
 func (h *tokenHandler) issueAccessToken(client identity.Client, subject string, scope []string) ([]byte, error) {
 	key, err := h.keyset.Signing(h.now())
 	if err != nil {
