@@ -1045,3 +1045,50 @@ it protects anything when there is no browser step to intercept.
    for one, unlike `authorization_code`'s conditional one — the client
    can always obtain a fresh access token by presenting its own
    credentials again.
+
+---
+
+## 20. Flow 8 — `POST /introspect` (RFC 7662, RS-25, RS-26, #50)
+
+Shares `/revoke`'s own dual-check shape exactly (Flow 4, §13): authenticate
+the client, try the presented value as an access token first
+(`tokenvalidator.ValidateForRevocation`), fall back to a refresh-token
+lookup on failure. The two endpoints answer the same underlying question
+about the same two token kinds; only what a *genuinely active* result
+looks like differs.
+
+1. Authenticate the client (shared with every other `/token`-adjacent
+   route). Missing or wrong credentials → `invalid_client`, same as
+   `/revoke` and `/token` — **not** folded into `{"active": false}`: RFC
+   7662 §2.1 requires the caller to authenticate, and failing that is a
+   distinct, reported error.
+2. `token` missing → `invalid_request`, before authentication is even
+   checked, mirroring `/revoke`'s own order.
+3. Verifies as an access token (`ValidateForRevocation`): `Claims
+   .ClientID` must equal the authenticated client, and the claimed `exp`
+   must still be in the future by this handler's own clock (not just
+   within `ValidateForRevocation`'s skew tolerance — the same `ttl <= 0`
+   edge case Flow 4 step 3 documents, decided here as inactive rather
+   than merely "nothing left to deny-list"). Either failing → inactive.
+   Otherwise respond `active: true` with the full claim set this project
+   can answer truthfully: `scope`, `client_id`, `token_type: "Bearer"`,
+   `sub`, `iss`, `aud`, `exp`, `iat`, `jti`.
+4. **Fails verification** (bad signature, wrong `typ`, expired beyond
+   skew, or not a JWS at all): treat `token` as a refresh token instead.
+   `FamilyStore.Lookup` — not found (which already folds in "past its own
+   idle or absolute lifetime," the same ambiguity Flow 3's own `invalid
+   _grant` relies on) → inactive. Found but `Family.ClientID` does not
+   match the authenticated client → inactive (RFC 7662's own binding
+   check, the same one Flow 4 step 4 already applies). `RevokedAt` set,
+   or this exact token value's own `ConsumedAt` set (already rotated
+   away by a real refresh exchange, Flow 3 step 5) → inactive. Otherwise
+   respond `active: true` with `scope`, `client_id`, `sub`, `iss`, `exp`
+   (the family's own absolute lifetime) — there is no per-token `iat` or
+   `jti` to report for an opaque value.
+5. Every inactive cause above produces the identical body,
+   `{"active":false}` — the zero `introspectBody{}`, never a
+   hand-written literal that could drift from what the active branches
+   above actually populate (RS-25's ambiguity principle, the same one
+   `/token`'s `invalid_grant` and `/revoke`'s always-200 already apply).
+6. Respond with `Cache-Control: no-store` (RS-26) — the same `tokenGroup`
+   `/token` and `/revoke` already carry; no new route group.

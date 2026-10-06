@@ -65,6 +65,7 @@ func TestDiscovery_EndpointsAreRegisteredRoutes(t *testing.T) {
 		{http.MethodGet, body.UserinfoEndpoint},
 		{http.MethodGet, body.JWKSURI},
 		{http.MethodPost, body.RevocationEndpoint},
+		{http.MethodPost, body.IntrospectionEndpoint},
 	} {
 		path := pathOf(t, want.rawURL)
 		if !registered(want.method, path) {
