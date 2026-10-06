@@ -62,7 +62,7 @@ type testKeyFileMeta struct {
 // defaults. now must be the same fixed clock routerDeps.Now returns
 // (testDeps's own time.Date(2026, 1, 1, ...)), not real wall-clock time:
 // keys.Keyset.Signing is looked up against deps.Now(), not time.Now().
-func testKeyset(t *testing.T, now time.Time) *keys.Keyset {
+func testKeyset(t testing.TB, now time.Time) *keys.Keyset {
 	t.Helper()
 	dir := t.TempDir()
 
@@ -99,7 +99,7 @@ func testKeyset(t *testing.T, now time.Time) *keys.Keyset {
 	return ks
 }
 
-func tokenDeps(t *testing.T, clients ...identity.Client) routerDeps {
+func tokenDeps(t testing.TB, clients ...identity.Client) routerDeps {
 	t.Helper()
 	deps := testDeps(t)
 	deps.Clients = clients
@@ -890,4 +890,68 @@ func TestToken_SuccessResponseCarriesNoLocation(t *testing.T) {
 	if got := rec.Header().Get("Location"); got != "" {
 		t.Errorf("token success response carries a Location header: %q", got)
 	}
+}
+
+// FuzzToken fuzzes POST /token's own form fields -- grant_type,
+// client_id, client_secret, code, redirect_uri, code_verifier,
+// refresh_token and scope. REQUIREMENTS §10's own property, stated for
+// this endpoint specifically: no malformed input ever produces an
+// accepted token. deps registers one real, confidential client so
+// authentication sometimes succeeds and the fuzzer can reach deeper
+// into each grant's own validation -- but no genuinely valid code or
+// refresh token is ever seeded, so a 200 here can only mean the fuzzer
+// found an actual bypass, never a lucky guess at a real credential.
+func FuzzToken(f *testing.F) {
+	client := confidentialTestClient("fuzz-secret")
+	client.GrantTypes = []string{"authorization_code", "refresh_token", "client_credentials"}
+	client.Audiences = []string{"https://rs.example"}
+	deps := tokenDeps(f, client)
+	mux := newRouter(deps)
+
+	type seed struct {
+		grantType, clientID, clientSecret, code, redirectURI, codeVerifier, refreshToken, scope string
+	}
+	seeds := []seed{
+		{"authorization_code", testClientID, "fuzz-secret", "", testRedirectURI, testVerifier, "", "openid"},
+		{"refresh_token", testClientID, "fuzz-secret", "", "", "", "a-refresh-token", ""},
+		// Deliberately the wrong secret: unlike a code or a refresh
+		// token, a client secret is not single-use, so a seed carrying
+		// the *correct* one would be a genuinely valid exchange the
+		// fuzzer could then mutate around while keeping it valid --
+		// client_credentials ignores code/redirect_uri/code_verifier
+		// entirely, so every such mutation would also legitimately
+		// succeed. Found by this fuzz target's own first run.
+		{"client_credentials", testClientID, "wrong-secret", "", "", "", "", "read"},
+		{"", "", "", "", "", "", "", ""},
+		{"authorization_code\x00", testClientID, "", "../../etc/passwd", "javascript:alert(1)", "", "", "openid\x00"},
+		{strings.Repeat("a", 5000), testClientID, strings.Repeat("b", 5000), "", "", "", "", ""},
+		{"password", testClientID, "fuzz-secret", "", "", "", "", ""},
+	}
+	for _, s := range seeds {
+		f.Add(s.grantType, s.clientID, s.clientSecret, s.code, s.redirectURI, s.codeVerifier, s.refreshToken, s.scope)
+	}
+
+	f.Fuzz(func(t *testing.T, grantType, clientID, clientSecret, code, redirectURI, codeVerifier, refreshToken, scope string) {
+		form := url.Values{
+			"grant_type":    {grantType},
+			"client_id":     {clientID},
+			"client_secret": {clientSecret},
+			"code":          {code},
+			"redirect_uri":  {redirectURI},
+			"code_verifier": {codeVerifier},
+			"refresh_token": {refreshToken},
+			"scope":         {scope},
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, postToken(form, "", ""))
+
+		if rec.Code == http.StatusInternalServerError {
+			t.Fatalf("500 for grant_type=%q client_id=%q client_secret=%q code=%q redirect_uri=%q code_verifier=%q refresh_token=%q scope=%q",
+				grantType, clientID, clientSecret, code, redirectURI, codeVerifier, refreshToken, scope)
+		}
+		if rec.Code == http.StatusOK {
+			t.Fatalf("malformed input ACCEPTED (200): grant_type=%q client_id=%q client_secret=%q code=%q redirect_uri=%q code_verifier=%q refresh_token=%q scope=%q, body: %s",
+				grantType, clientID, clientSecret, code, redirectURI, codeVerifier, refreshToken, scope, rec.Body.String())
+		}
+	})
 }

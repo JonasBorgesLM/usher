@@ -118,6 +118,8 @@ that is `cmd/usher`'s own router, exercised manually or by a future `warden`/
 go test -race ./...
 go test -tags=integration -race ./...   # real Postgres and Redis, via testcontainers
 go test -fuzz=FuzzParseToken -fuzztime=60s ./pkg/tokenvalidator
+go test -fuzz=FuzzAuthorize -fuzztime=60s ./cmd/usher
+go test -fuzz=FuzzToken -fuzztime=60s ./cmd/usher
 ```
 
 Requirements that apply to a *class* of points — every credential route carries

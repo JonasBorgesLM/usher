@@ -194,6 +194,7 @@ govulncheck ./...
 ./.github/scripts/check-docs.sh
 ./.github/scripts/check-boundaries.sh     # ADR-0001
 ./.github/scripts/check-dependencies.sh   # RNF-09
+./.github/scripts/check-readme-examples.sh  # REQUIREMENTS §10
 ```
 
 ---

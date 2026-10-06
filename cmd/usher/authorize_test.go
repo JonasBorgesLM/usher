@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func doAuthorize(t *testing.T, mux http.Handler, q url.Values) *httptest.Respons
 	return rec
 }
 
-func authorizeDeps(t *testing.T, clients ...identity.Client) routerDeps {
+func authorizeDeps(t testing.TB, clients ...identity.Client) routerDeps {
 	t.Helper()
 	deps := testDeps(t)
 	deps.Clients = clients
@@ -476,4 +477,62 @@ func TestAuthorize_IssPresentOnErrorRedirect(t *testing.T) {
 	if got := loc.Query().Get("iss"); got != "https://usher.test" {
 		t.Errorf("iss = %q, want %q", got, "https://usher.test")
 	}
+}
+
+// FuzzAuthorize fuzzes six of /authorize's own query parameters --
+// client_id, redirect_uri, scope, code_challenge_method, prompt and
+// max_age, the ones with any real parsing or comparison logic behind
+// them, as opposed to state/nonce/code_challenge which are only ever
+// stored or echoed verbatim. REQUIREMENTS §10's own property: no
+// malformed input panics this binary or produces 500 -- RS-28's
+// validation order should turn literally anything into either a
+// locally-rendered error page or a verified-redirect_uri error
+// redirect, never a crash.
+//
+// url.Values.Encode() builds the query string, so a fuzzed value can
+// never produce an unparseable URL regardless of what characters it
+// contains -- only the parameter *values* are fuzzed, matching this
+// issue's own "parameter parsing" framing, not the raw query string
+// grammar net/url already owns.
+func FuzzAuthorize(f *testing.F) {
+	mux := newRouter(authorizeDeps(f, testClient()))
+
+	type seed struct {
+		clientID, redirectURI, scope, codeChallengeMethod, prompt, maxAge string
+	}
+	seeds := []seed{
+		{testClientID, testRedirectURI, "openid", "S256", "", ""},
+		{testClientID, testRedirectURI, "openid", "S256", "none", "60"},
+		{testClientID, testRedirectURI, "openid", "S256", "login", "0"},
+		{"", "", "", "", "", ""},
+		{"../../../../etc/passwd", "javascript:alert(1)", "openid\x00profile", "plain", "logina", "-99999999999999999999"},
+		{testClientID, testRedirectURI, strings.Repeat("a", 5000), "S256", strings.Repeat("x", 5000), "3.14"},
+		{testClientID, "https://client.example/callback%", "openid", "S256", "none", "9999999999999999999999999999"},
+	}
+	for _, s := range seeds {
+		f.Add(s.clientID, s.redirectURI, s.scope, s.codeChallengeMethod, s.prompt, s.maxAge)
+	}
+
+	f.Fuzz(func(t *testing.T, clientID, redirectURI, scope, codeChallengeMethod, prompt, maxAge string) {
+		q := url.Values{
+			"response_type":         {"code"},
+			"client_id":             {clientID},
+			"redirect_uri":          {redirectURI},
+			"state":                 {"xyz123"},
+			"scope":                 {scope},
+			"code_challenge":        {"E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"},
+			"code_challenge_method": {codeChallengeMethod},
+			"prompt":                {prompt},
+			"max_age":               {maxAge},
+		}
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://usher.test/authorize?"+q.Encode(), http.NoBody)
+		req.Host = "usher.test"
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusInternalServerError {
+			t.Fatalf("500 for client_id=%q redirect_uri=%q scope=%q code_challenge_method=%q prompt=%q max_age=%q",
+				clientID, redirectURI, scope, codeChallengeMethod, prompt, maxAge)
+		}
+	})
 }
