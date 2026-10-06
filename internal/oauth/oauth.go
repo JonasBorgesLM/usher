@@ -21,6 +21,7 @@ type Code struct {
 	Nonce         string // "" if the request carried none (RS-30)
 	Scope         []string
 	Subject       string
+	AuthTime      time.Time // the browser session's own auth_time (RF-11); zero only for a Code built without it
 	ExpiresAt     time.Time
 }
 

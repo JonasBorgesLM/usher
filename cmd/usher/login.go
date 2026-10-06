@@ -36,6 +36,7 @@ type loginHandler struct {
 	challenges session.ChallengeStore
 	protector  *csrf.Protector
 	emitter    audit.Emitter // RF-09; nil is valid and simply emits nothing
+	issuer     string        // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
 
 	idleTTL, absoluteTTL time.Duration
 	now                  func() time.Time
@@ -61,8 +62,103 @@ type loginPageData struct {
 	Error     string
 }
 
+// get is RF-10/RF-11's own decision point (ADR-0020): with no
+// login_challenge, behavior is unchanged from M1 -- there is no OIDC
+// request here to apply prompt/max_age against. With one, and only if the
+// challenge itself still resolves, it checks whether the browser already
+// carries a session that satisfies this specific request before falling
+// back to rendering the form -- the same silent-completion shape
+// consent.go's own serve already uses for RF-13's consent skip, applied
+// here to login.
+//
+// An unresolvable challenge (unknown or expired) renders the form exactly
+// as it did before this method existed: the POST that follows will fail
+// against the same challenge, the same outcome this already produced.
 func (h *loginHandler) get(w http.ResponseWriter, r *http.Request) {
-	h.render(w, r, loginPageData{Challenge: r.URL.Query().Get("login_challenge")})
+	challengeID := r.URL.Query().Get("login_challenge")
+	if challengeID == "" {
+		h.render(w, r, loginPageData{})
+		return
+	}
+
+	challenge, err := h.challenges.Get(r.Context(), challengeID)
+	if err != nil {
+		h.render(w, r, loginPageData{Challenge: challengeID})
+		return
+	}
+
+	sess, hasSession := h.existingSession(r)
+	if h.needsFreshAuthentication(challenge, sess, hasSession) {
+		if challenge.Prompt == "none" {
+			// RS-29's own issuer, carried on this error the same as every
+			// other /authorize-originated redirect. onParseError is
+			// defensive only: challenge.RedirectURI already passed
+			// exactRedirectURIMatch when /authorize created this
+			// challenge (RS-28).
+			redirectOAuthError(w, r, h.logger, h.issuer, challenge.RedirectURI, challenge.State,
+				"login_required", "",
+				func(string) { http.Error(w, "internal error", http.StatusInternalServerError) })
+			return
+		}
+		h.render(w, r, loginPageData{Challenge: challengeID})
+		return
+	}
+
+	// Silent reuse: a session already satisfies this request (RF-10) --
+	// prompt never asked for login, and max_age, if present, is still
+	// satisfied. authTime is the session's own, unchanged: a reused
+	// session does not get a fresher auth_time than the login that
+	// actually produced it.
+	h.proceedToConsent(w, r, challengeID, sess.Subject, sess.AuthTime)
+}
+
+// existingSession reports the browser's current session, if its cookie
+// names one that is still live. Both failure modes -- no cookie, or a
+// cookie session.SessionStore no longer recognizes -- collapse to
+// hasSession=false: this call site only ever asks "is there something to
+// reuse," never why there is not.
+func (h *loginHandler) existingSession(r *http.Request) (sess session.BrowserSession, hasSession bool) {
+	rawID, err := session.RawSessionID(r)
+	if err != nil {
+		return session.BrowserSession{}, false
+	}
+	sess, err = h.sessions.Get(r.Context(), rawID)
+	if err != nil {
+		return session.BrowserSession{}, false
+	}
+	return sess, true
+}
+
+// needsFreshAuthentication is RF-11's own three conditions, any one of
+// which forces the login form regardless of what prompt=none would
+// otherwise skip: no usable session at all, prompt=login overriding one
+// that does exist, or max_age naming a window sess.AuthTime no longer
+// falls inside of.
+func (h *loginHandler) needsFreshAuthentication(challenge session.Challenge, sess session.BrowserSession, hasSession bool) bool {
+	if !hasSession {
+		return true
+	}
+	if challenge.Prompt == "login" {
+		return true
+	}
+	if challenge.MaxAge != nil && h.now().Sub(sess.AuthTime) > *challenge.MaxAge {
+		return true
+	}
+	return false
+}
+
+// proceedToConsent is login's own half of the login->consent hand-off,
+// shared by a fresh password login (completeLogin) and a silent reuse
+// (get): record the authenticated subject and its auth_time on the
+// challenge (RF-11's auth_time claim is this value, carried unchanged
+// from here to oauth.Code in consent.go), then redirect to /consent.
+func (h *loginHandler) proceedToConsent(w http.ResponseWriter, r *http.Request, challengeID, subject string, authTime time.Time) {
+	if err := h.challenges.SetAuthenticated(r.Context(), challengeID, subject, authTime); err != nil {
+		h.logger.ErrorContext(r.Context(), "login: set challenge authenticated", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/consent?login_challenge="+url.QueryEscape(challengeID), http.StatusSeeOther)
 }
 
 func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
@@ -143,13 +239,7 @@ func (h *loginHandler) completeLogin(w http.ResponseWriter, r *http.Request, cha
 		h.renderLoggedIn(w, r)
 		return
 	}
-
-	if err := h.challenges.SetSubject(r.Context(), challenge, subject); err != nil {
-		h.logger.ErrorContext(r.Context(), "login: set challenge subject", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/consent?login_challenge="+url.QueryEscape(challenge), http.StatusSeeOther)
+	h.proceedToConsent(w, r, challenge, subject, h.now())
 }
 
 func (h *loginHandler) render(w http.ResponseWriter, r *http.Request, data loginPageData) {

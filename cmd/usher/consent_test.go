@@ -139,6 +139,85 @@ func TestConsent_NoPriorGrantRendersForm(t *testing.T) {
 	}
 }
 
+// TestConsent_PromptNoneWithConsentRequiredGetsConsentRequired is RF-11's
+// own consent half (ADR-0020, #47): consent genuinely required and not
+// yet granted, combined with prompt=none, must redirect consent_required
+// rather than rendering the form prompt=none exists to suppress.
+//
+// Negative control: with the `challenge.Prompt == "none"` check removed
+// from consent.go's serve, this test failed -- the form rendered (status
+// 200) instead of redirecting. Verified by hand, restored before
+// committing.
+func TestConsent_PromptNoneWithConsentRequiredGetsConsentRequired(t *testing.T) {
+	deps := consentDeps(t, consentTestClient())
+	mux := newRouter(deps)
+	c := session.Challenge{
+		ID:            "challenge-1",
+		ClientID:      testClientID,
+		RedirectURI:   testRedirectURI,
+		Scope:         []string{"openid"},
+		State:         "xyz123",
+		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		Prompt:        "none",
+		Subject:       testSubject,
+		ExpiresAt:     deps.Now().Add(5 * time.Minute),
+	}
+	if err := deps.Challenges.Save(context.Background(), c); err != nil {
+		t.Fatalf("seed challenge: %v", err)
+	}
+
+	_, _, rec := getConsent(t, mux, c.ID)
+	assertErrorRedirect(t, rec, "consent_required")
+}
+
+// TestConsent_AllowCarriesAuthTimeOntoCode is RF-11/#47's own thread: the
+// challenge's AuthTime (set by /login, fresh or reused) survives into the
+// issued oauth.Code unchanged -- token.go's issueIDToken reads it from
+// there, not from the challenge again.
+func TestConsent_AllowCarriesAuthTimeOntoCode(t *testing.T) {
+	deps := consentDeps(t, consentTestClient())
+	mux := newRouter(deps)
+	authTime := deps.Now().Add(-7 * time.Minute)
+	c := session.Challenge{
+		ID:            "challenge-1",
+		ClientID:      testClientID,
+		RedirectURI:   testRedirectURI,
+		Scope:         []string{"openid"},
+		State:         "xyz123",
+		CodeChallenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+		Subject:       testSubject,
+		AuthTime:      authTime,
+		ExpiresAt:     deps.Now().Add(5 * time.Minute),
+	}
+	if err := deps.Challenges.Save(context.Background(), c); err != nil {
+		t.Fatalf("seed challenge: %v", err)
+	}
+
+	token, cookie, _ := getConsent(t, mux, c.ID)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postConsent(token, cookie, c.ID, "allow"))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("POST /consent decision=allow = %d, want %d, body: %s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse Location: %v", err)
+	}
+	codeValue := loc.Query().Get("code")
+
+	fakeCodes, ok := deps.Codes.(*fakeCodeStore)
+	if !ok {
+		t.Fatalf("deps.Codes is a %T, want *fakeCodeStore", deps.Codes)
+	}
+	saved, ok := fakeCodes.codes[codeValue]
+	if !ok {
+		t.Fatal("the code in the redirect was never saved to the CodeStore")
+	}
+	if !saved.AuthTime.Equal(authTime) {
+		t.Errorf("saved code AuthTime = %s, want the challenge's own %s", saved.AuthTime, authTime)
+	}
+}
+
 // TestConsent_PriorGrantCoveringScopeSkipsForm confirms the other half:
 // once consent already covers the requested scope, the form is skipped.
 func TestConsent_PriorGrantCoveringScopeSkipsForm(t *testing.T) {

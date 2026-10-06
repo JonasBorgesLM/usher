@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,6 +77,28 @@ func (h *authorizeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RF-11: prompt is a single value here, never the space-delimited
+	// list OIDC Core allows in general -- "none" and "login" are the two
+	// this project implements (ADR-0020), and anything else, including a
+	// combination like "login consent", is invalid_request rather than
+	// silently accepting the first recognized value out of a list this
+	// server does not otherwise support.
+	prompt := q.Get("prompt")
+	if prompt != "" && prompt != "none" && prompt != "login" {
+		h.redirectError(w, r, redirectURI, state, "invalid_request", `prompt must be "none" or "login"`)
+		return
+	}
+	var maxAge *time.Duration
+	if raw := q.Get("max_age"); raw != "" {
+		seconds, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || seconds < 0 {
+			h.redirectError(w, r, redirectURI, state, "invalid_request", "max_age must be a non-negative integer")
+			return
+		}
+		d := time.Duration(seconds) * time.Second
+		maxAge = &d
+	}
+
 	id, err := session.NewRawID()
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "authorize: generate challenge id", "error", err)
@@ -90,6 +113,8 @@ func (h *authorizeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		State:         state,
 		CodeChallenge: codeChallenge,
 		Nonce:         q.Get("nonce"), // "" if absent (RS-30)
+		Prompt:        prompt,
+		MaxAge:        maxAge,
 		ExpiresAt:     h.now().Add(h.challengeTTL),
 	}
 	if err := h.challenges.Save(r.Context(), challenge); err != nil {

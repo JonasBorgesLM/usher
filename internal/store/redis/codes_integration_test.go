@@ -56,6 +56,45 @@ func TestCodeStore_SaveAndConsume_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestCodeStore_AuthTime_RoundTrip is #47's own addition: AuthTime
+// survives a real Redis round trip, and a Code built without one (the
+// zero time.Time) comes back zero too, rather than Unix epoch 0
+// (1970-01-01) -- the same "absent, not a real-looking zero value"
+// property challenges_integration_test.go's own MaxAge test asserts.
+func TestCodeStore_AuthTime_RoundTrip(t *testing.T) {
+	clock := &fakeClock{t: time.Now()}
+	store := newTestCodeStore(t, clock)
+	ctx := context.Background()
+
+	withAuthTime := testCode(clock, "code-with-auth-time", time.Minute)
+	withAuthTime.AuthTime = clock.now().Add(-5 * time.Minute)
+	if err := store.Save(ctx, withAuthTime); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Consume(ctx, "code-with-auth-time")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	// Unix-seconds precision, the same encoding ExpiresAt already uses in
+	// this store -- .Equal would fail on the sub-second component the
+	// round trip never claimed to preserve.
+	if got.AuthTime.Unix() != withAuthTime.AuthTime.Unix() {
+		t.Errorf("AuthTime = %s, want %s", got.AuthTime, withAuthTime.AuthTime)
+	}
+
+	withoutAuthTime := testCode(clock, "code-without-auth-time", time.Minute)
+	if err := store.Save(ctx, withoutAuthTime); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got2, err := store.Consume(ctx, "code-without-auth-time")
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	if !got2.AuthTime.IsZero() {
+		t.Errorf("AuthTime = %s, want zero", got2.AuthTime)
+	}
+}
+
 func TestCodeStore_SaveTwiceRefuses(t *testing.T) {
 	clock := &fakeClock{t: time.Now()}
 	store := newTestCodeStore(t, clock)

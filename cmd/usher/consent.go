@@ -88,6 +88,18 @@ func (h *consentHandler) serve(w http.ResponseWriter, r *http.Request, challenge
 		return
 	}
 
+	// RF-11/ADR-0020: prompt=none suppresses UI on this side of the flow
+	// too -- consent still genuinely required at this point (both checks
+	// above already failed), so the only options left are redirect an
+	// error or silently grant consent the user was never asked for; OIDC
+	// Core requires the former.
+	if challenge.Prompt == "none" {
+		redirectOAuthError(w, r, h.logger, h.issuer, challenge.RedirectURI, challenge.State,
+			"consent_required", "",
+			func(message string) { h.renderError(w, r, message) })
+		return
+	}
+
 	h.renderConsentForm(w, r, challenge)
 }
 
@@ -157,6 +169,7 @@ func (h *consentHandler) completeConsent(w http.ResponseWriter, r *http.Request,
 		Nonce:         final.Nonce,
 		Scope:         final.Scope,
 		Subject:       final.Subject,
+		AuthTime:      final.AuthTime,
 		ExpiresAt:     h.now().Add(h.codeTTL),
 	}
 	if err := h.codes.Save(r.Context(), code); err != nil {

@@ -144,6 +144,21 @@ func seedCodeWithNonce(t *testing.T, deps routerDeps, value, clientID, redirectU
 	}
 }
 
+// seedCodeWithAuthTime is seedCode with AuthTime exposed, for #47's own
+// done-when that a Code carrying one echoes it, unchanged, as the
+// id_token's own auth_time claim (RF-11).
+func seedCodeWithAuthTime(t *testing.T, deps routerDeps, value, clientID, redirectURI string, scope []string, authTime time.Time) {
+	t.Helper()
+	code := oauth.Code{
+		Value: value, ClientID: clientID, RedirectURI: redirectURI,
+		CodeChallenge: testCodeChallenge(), Scope: scope, Subject: testSubject,
+		AuthTime: authTime, ExpiresAt: deps.Now().Add(time.Minute),
+	}
+	if err := deps.Codes.Save(context.Background(), code); err != nil {
+		t.Fatalf("seed code: %v", err)
+	}
+}
+
 // validTokenForm is the known-good baseline every test below mutates
 // exactly one value away from, the same shape authorize_test.go's own
 // validAuthorizeQuery() uses.
@@ -316,6 +331,13 @@ func TestToken_AuthorizationCode_GoldenPath(t *testing.T) {
 	if nonce, err := jwt.Get[string](idParsed, "nonce"); err == nil {
 		t.Errorf("id_token nonce = %q, want absent (no nonce on this code)", nonce)
 	}
+	// Same reasoning for auth_time (RF-11, #47): seedCode's own Code
+	// carries a zero AuthTime, which must stay absent, never a
+	// zero-looking Unix epoch 0 claim. See
+	// TestToken_AuthorizationCode_AuthTimeEchoed for the round-trip case.
+	if authTime, err := jwt.Get[int64](idParsed, "auth_time"); err == nil {
+		t.Errorf("id_token auth_time = %v, want absent (no auth_time on this code)", authTime)
+	}
 }
 
 // TestToken_AuthorizationCode_NonceEchoed is #44's own done-when: a
@@ -353,6 +375,45 @@ func TestToken_AuthorizationCode_NonceEchoed(t *testing.T) {
 	nonce, err := jwt.Get[string](parsed, "nonce")
 	if err != nil || nonce != wantNonce {
 		t.Errorf("id_token nonce = %q, err=%v, want %q", nonce, err, wantNonce)
+	}
+}
+
+// TestToken_AuthorizationCode_AuthTimeEchoed is #47's own done-when: a
+// Code carrying an AuthTime (set by /login, fresh or reused -- consent.go's
+// own completeConsent, not this file) comes back as the id_token's
+// auth_time claim, unchanged (RF-11).
+//
+// Negative control: with the `if !authTime.IsZero() { claims.AuthTime =
+// ... }` block removed from issueIDToken, this test failed -- auth_time
+// was absent from an id_token whose Code genuinely carried one. Verified
+// by hand, restored before committing.
+func TestToken_AuthorizationCode_AuthTimeEchoed(t *testing.T) {
+	client := testClient()
+	deps := tokenDeps(t, client)
+	mux := newRouter(deps)
+	wantAuthTime := deps.Now().Add(-90 * time.Second)
+	seedCodeWithAuthTime(t, deps, testTokenCode, testClientID, testRedirectURI, []string{"openid"}, wantAuthTime)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postToken(validTokenForm(), "", ""))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /token = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := decodeTokenSuccess(t, rec)
+	if body.IDToken == "" {
+		t.Fatal("id_token is empty")
+	}
+
+	key := deps.Keyset.Published(deps.Now())[0]
+	pub := key.Private.Public()
+	parsed, err := jwt.Parse([]byte(body.IDToken), jwt.WithKey(jwa.RS256(), pub), jwt.WithValidate(false))
+	if err != nil {
+		t.Fatalf("parse/verify id_token: %v", err)
+	}
+	authTime, err := jwt.Get[float64](parsed, "auth_time")
+	if err != nil || int64(authTime) != wantAuthTime.Unix() {
+		t.Errorf("id_token auth_time = %v, err=%v, want %d", authTime, err, wantAuthTime.Unix())
 	}
 }
 
