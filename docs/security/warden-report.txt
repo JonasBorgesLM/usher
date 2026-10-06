@@ -1,0 +1,103 @@
+warden run — 2026-10-06, local development machine (RI-06, issue #53)
+
+$ docker compose up -d
+$ go run ./cmd/seed
+$ cd ../warden && go build -o warden ./cmd/warden
+$ ./warden scan   --spec   usher/docs/security/warden-openapi.yaml \
+                  --config usher/docs/security/warden-config.yaml \
+                  --out    warden-findings.json
+$ ./warden attack --in warden-findings.json --config usher/docs/security/warden-config.yaml --out warden-confirmed.json
+$ ./warden report --in warden-confirmed.json --out warden-report.html --json warden-report.json
+
+target:     http://localhost:8080
+scope:      [localhost:8080 127.0.0.1:8080]
+spec:       docs/security/warden-openapi.yaml
+endpoints:  9 (0 require auth, 0 destructive)
+checks:     auth-required, cache-on-authenticated, cors-misconfigured, jwt-weak, missing-headers, open-redirect, xss-reflected
+
+wrote warden-findings.json (0 findings, 20 examined, 2 skipped, 0 failed; 22 checks run over 9 endpoints)
+  skipped: xss-reflected on GET /authorize: check skipped: 3 of 7 parameter(s) of GET /authorize could not be tested (response_type, scope, code_challenge_method); the rest were: checks: parameter was never exercised: no marker template could be sent against "code_challenge_method"
+  skipped: xss-reflected on GET /consent: check skipped: could not test any parameter of GET /consent: checks: parameter was never exercised: "login_challenge" answered 400 to the benign value "warden-probe-challenge", so a marker could not be reflected either
+
+attack:  warden-findings.json has no findings; nothing to attack (confirmed.json written with 0/0)
+report:  wrote warden-report.html, warden-report.json (0 findings, 0 confirmed)
+
+Full coverage detail: docs/security/warden-findings.json (committed alongside this file).
+
+---
+
+Reading this run: 0 findings across 20 examined (check, endpoint) pairs over
+9 public GET routes. Per RI-06's own rule ("a passing check that verifies
+nothing is worse than an absent one"), what follows is what each of the
+issue's seven named checks actually verified, or why it could not.
+
+Four checks ran clean and meaningfully, because usher renders real HTML and
+talks to a real database (RI-06's own point — unlike crier, where these
+confirmers had nothing to confirm against a JSON endpoint):
+
+- missing-headers — examined all 9 routes. Clean: usher's secureheaders
+  middleware sets CSP, HSTS, X-Frame-Options and X-Content-Type-Options on
+  every response, confirmed independently by scripts/probe-threats.sh's
+  T-12 and T-21 probes and by the Go test suite. Maps to RS-32.
+- cors-misconfigured — examined all 9 routes. Clean: usher never reflects
+  an Origin into Access-Control-Allow-Origin; it does not serve a
+  cross-origin API by design, so the secure state (no CORS headers at all)
+  held everywhere.
+- open-redirect — examined GET /authorize, the one route with a
+  redirect-shaped parameter (redirect_uri). Clean: no 3xx toward
+  scanner-redirect.example was observed. This is T-02/RS-02/RS-28's own
+  property, independently confirmed by probe-threats.sh's T-02 probe (an
+  unregistered redirect_uri gets a local 400, never a redirect).
+- xss-reflected — examined GET /login's login_challenge parameter (the one
+  query parameter usher actually reflects into a page: a hidden form
+  field's value attribute). Clean: html/template's own escaping held, no
+  marker came back raw. This is T-21/RS-36's own property, independently
+  confirmed by probe-threats.sh's T-21 probe and by usher's Go test suite.
+
+Three checks did not apply, for one shared reason, recorded here per RI-06's
+own instruction ("a check that cannot apply is recorded as such, with the
+reason") rather than left silent:
+
+- auth-required, cache-on-authenticated, jwt-weak — all three need warden's
+  own auth block to reach a 2xx behind credentials (auth-required needs to
+  know which routes are declared protected; cache-on-authenticated needs an
+  authenticated 2xx baseline; jwt-weak needs the scanner's own session
+  token to inspect and re-forge). warden's login model
+  (internal/core/auth/auth.go, in the warden repository) is a single JSON
+  POST with a token read back from a JSON response. usher has no route
+  shaped like that: its real login is a multi-step browser flow (a GET for
+  a per-request CSRF token embedded in an HTML form, then a form-encoded
+  POST carrying both the credential and that token, then a separate
+  consent step), and its machine-credential routes (/token, /revoke,
+  /introspect) are HTTP Basic auth over a form-encoded body, not a JSON
+  login. Neither shape fits warden's model. docs/security/warden-openapi.yaml
+  therefore marks no route as protected — not because none is, but because
+  marking one protected without a working auth block makes warden refuse to
+  run at all ("spec has protected routes, no auth configured").
+
+  This is a verification-method gap, not a security gap: the three
+  properties these checks would have verified are already covered by other
+  means in this repository —
+    - RS-06 (jwt-weak's alg:none target) — scripts/probe-threats.sh's T-05
+      probe and the Go test suite's own alg-allow-list negative control.
+    - RS-26 (cache-on-authenticated's target) — probe-threats.sh's T-14
+      probe (Cache-Control: no-store on every credential-bearing endpoint).
+    - RS-08 (the general "protected route rejects anonymous" property
+      auth-required would have checked) — probe-threats.sh's T-06 probe
+      and the Go test suite.
+
+Two xss-reflected skips (GET /authorize's three enum-shaped parameters, GET
+/consent's login_challenge) are not findings either: /authorize's
+response_type/scope/code_challenge_method are validated against a fixed set
+before anything renders, so no marker template applied to them meaningfully;
+GET /consent requires a login_challenge genuinely minted by a prior
+/authorize + login call — a bogus one always 400s, by design (RS-28-style
+validate-before-render), so there was nothing to plant a marker into.
+
+A known limitation of warden itself, not of usher: when scan produces zero
+findings, attack's confirmed.json does not carry scan's own coverage block
+forward (coverage reads all-zero in warden-confirmed.json, even though
+findings.json's own coverage block is complete). The committed
+warden-findings.json is the complete record; warden-report.html/.json were
+generated but are not committed here since they lost that detail on this
+particular (all-clean) run.

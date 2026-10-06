@@ -1,0 +1,43 @@
+# warden config for usher (RI-06, issue #53).
+#
+# No auth block: usher's real login is a multi-step browser flow (a form,
+# a per-request CSRF token read from a hidden HTML field, a login_challenge
+# minted by a prior /authorize call) and its machine-credential routes
+# (/token, /revoke, /introspect) are Basic-auth, form-encoded. warden's own
+# login model (internal/core/auth/auth.go in the warden repository) always
+# sends a single JSON POST and extracts a token from a JSON response — it
+# cannot drive either shape. docs/security/warden-openapi.yaml marks no
+# route as protected for exactly this reason, so warden runs without an
+# auth block instead of failing with "spec has protected routes, no auth
+# configured".
+schema_version: 1
+
+target:
+  base_url: http://localhost:8080
+
+scope:
+  allowed_hosts:
+    - "localhost:8080"
+    - "127.0.0.1:8080"
+
+engine:
+  # usher's own loginLimiter (RS-22) covers /login and /consent with a
+  # burst of 5 and a 1/s refill -- warden's default pace trips it before a
+  # single endpoint's probes finish, which reads as "skipped: 429" and is
+  # really just this scanner outrunning the target's own rate limit, not a
+  # finding. Kept gentle enough to stay under that ceiling.
+  max_concurrency: 1
+  requests_per_second: 1
+  timeout: 5m
+  test_destructive: false
+  test_creates: false
+
+checks:
+  enabled:
+    - missing-headers
+    - cache-on-authenticated
+    - cors-misconfigured
+    - auth-required
+    - jwt-weak
+    - xss-reflected
+    - open-redirect

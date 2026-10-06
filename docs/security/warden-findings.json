@@ -1,0 +1,125 @@
+{
+  "schema_version": 3,
+  "coverage": {
+    "endpoints_total": 9,
+    "checks_run": 22,
+    "examined": [
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/.well-known/jwks.json"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/.well-known/jwks.json"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/.well-known/openid-configuration"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/.well-known/openid-configuration"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/authorize"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/authorize"
+      },
+      {
+        "check": "open-redirect",
+        "method": "GET",
+        "path": "/authorize"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/consent"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/consent"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/healthz"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/healthz"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/login"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/login"
+      },
+      {
+        "check": "xss-reflected",
+        "method": "GET",
+        "path": "/login"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/logout"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/logout"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/readyz"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/readyz"
+      },
+      {
+        "check": "cors-misconfigured",
+        "method": "GET",
+        "path": "/userinfo"
+      },
+      {
+        "check": "missing-headers",
+        "method": "GET",
+        "path": "/userinfo"
+      }
+    ],
+    "skipped": [
+      {
+        "check": "xss-reflected",
+        "method": "GET",
+        "path": "/authorize",
+        "reason": "check skipped: 3 of 7 parameter(s) of GET /authorize could not be tested (response_type, scope, code_challenge_method); the rest were: checks: parameter was never exercised: no marker template could be sent against \"code_challenge_method\""
+      },
+      {
+        "check": "xss-reflected",
+        "method": "GET",
+        "path": "/consent",
+        "reason": "check skipped: could not test any parameter of GET /consent: checks: parameter was never exercised: \"login_challenge\" answered 400 to the benign value \"warden-probe-challenge\", so a marker could not be reflected either"
+      }
+    ],
+    "failed": []
+  },
+  "findings": []
+}
