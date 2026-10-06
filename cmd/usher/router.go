@@ -119,6 +119,7 @@ var routeGroups = map[string]routeGroup{
 	"/authorize":                        authorizeGroup,
 	"/token":                            tokenGroup,
 	"/revoke":                           tokenGroup,
+	"/introspect":                       tokenGroup,
 	"/userinfo":                         userinfoGroup,
 	"/.well-known/jwks.json":            jwksGroup,
 	"/.well-known/openid-configuration": jwksGroup,
@@ -247,6 +248,15 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:    deps.Logger,
 	}
 
+	introspect := &introspectHandler{
+		clients:   deps.Clients,
+		families:  deps.Families,
+		validator: bearerValidator,
+		issuer:    deps.Issuer,
+		now:       deps.Now,
+		logger:    deps.Logger,
+	}
+
 	userinfo := &userinfoHandler{
 		validator: bearerValidator,
 		audience:  userinfoAudience(deps.Issuer),
@@ -299,6 +309,9 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodPost, "/revoke",
 		tokenGroup.wrap(nil, nil, revoke))
+
+	r.Method(http.MethodPost, "/introspect",
+		tokenGroup.wrap(nil, nil, introspect))
 
 	r.Method(http.MethodGet, "/userinfo",
 		userinfoGroup.wrap(nil, nil, userinfo))

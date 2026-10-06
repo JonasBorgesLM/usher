@@ -25,10 +25,8 @@ import (
 
 // discoveryBody is OIDC Discovery 1.0's own metadata document, narrowed
 // to the fields this server can answer truthfully. There is no
-// registration_endpoint (RF-01's clients are static configuration, never
-// dynamically registered) and no introspection_endpoint (REQUIREMENTS
-// §3.2 names RFC 7662 as a protocol surface but nothing implements it
-// yet) -- both left out rather than advertised as present.
+// registration_endpoint: RF-01's clients are static configuration, never
+// dynamically registered.
 type discoveryBody struct {
 	Issuer                                     string   `json:"issuer"`
 	AuthorizationEndpoint                      string   `json:"authorization_endpoint"`
@@ -36,6 +34,7 @@ type discoveryBody struct {
 	UserinfoEndpoint                           string   `json:"userinfo_endpoint"`
 	JWKSURI                                    string   `json:"jwks_uri"`
 	RevocationEndpoint                         string   `json:"revocation_endpoint"`
+	IntrospectionEndpoint                      string   `json:"introspection_endpoint"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	GrantTypesSupported                        []string `json:"grant_types_supported"`
 	SubjectTypesSupported                      []string `json:"subject_types_supported"`
@@ -60,6 +59,7 @@ func (h *discoveryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserinfoEndpoint:      h.issuer + "/userinfo",
 		JWKSURI:               h.issuer + "/.well-known/jwks.json",
 		RevocationEndpoint:    h.issuer + "/revoke",
+		IntrospectionEndpoint: h.issuer + "/introspect",
 		// "code" only: authorize.go's own response_type check (RF-02 Flow
 		// 1 step 1) rejects anything else with unsupported_response_type.
 		ResponseTypesSupported: []string{"code"},
