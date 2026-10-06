@@ -79,7 +79,11 @@ func TestDiscovery_EndpointsAreRegisteredRoutes(t *testing.T) {
 func TestDiscovery_NoImplicitOrPasswordGrantAdvertised(t *testing.T) {
 	body := getDiscovery(t, newRouter(testDeps(t)))
 
-	for _, forbidden := range []string{"implicit", "password", "client_credentials"} {
+	// client_credentials was in this forbidden list through #46 only
+	// because nothing implemented it yet -- #49 made it real, unlike
+	// implicit/password, which OAuth 2.1 drops entirely and are never
+	// candidates.
+	for _, forbidden := range []string{"implicit", "password"} {
 		if slices.Contains(body.GrantTypesSupported, forbidden) {
 			t.Errorf("grant_types_supported = %v, must not include %q (REQUIREMENTS §3.1)", body.GrantTypesSupported, forbidden)
 		}
@@ -130,7 +134,7 @@ func TestDiscovery_ResponseTypesSupported_MatchesAuthorizeBehavior(t *testing.T)
 // negative control already covers the refusal itself).
 func TestDiscovery_GrantTypesSupported_MatchesTokenBehavior(t *testing.T) {
 	body := getDiscovery(t, newRouter(testDeps(t)))
-	want := []string{"authorization_code", "refresh_token"}
+	want := []string{"authorization_code", "refresh_token", "client_credentials"}
 	if !slices.Equal(body.GrantTypesSupported, want) {
 		t.Fatalf("grant_types_supported = %v, want %v", body.GrantTypesSupported, want)
 	}

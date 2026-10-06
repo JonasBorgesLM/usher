@@ -271,10 +271,22 @@ type Strategy interface {
 }
 ```
 
-`AuthorizationCode` (M2) and `RefreshToken` (M4) are the two Strategies in the
-MVP; `ClientCredentials` (M8) is the third. Each is a small, separately
-testable type — the pattern exists so a grant's rules do not leak into the
-Facade's dispatch code.
+**This is the plan this document carried through M2/M4; it is not what was
+built.** All three grants — `handleAuthorizationCode` (M2), `handleRefreshToken`
+(M4), `handleClientCredentials` (M8, #49) — are methods on `tokenHandler`
+(`cmd/usher/token.go`), dispatched by a `switch` in `ServeHTTP`, never
+`grant.Strategy` implementations behind a Facade. `grant.go`'s own `Strategy`
+interface above has zero implementations anywhere in this codebase.
+
+REQUIREMENTS §8 itself permits this ("a pattern the phase does not need is
+not introduced for this table's sake"): the direct-dispatch shape gives each
+grant its own isolated method with no shared mutable state between them,
+which is the actual property Strategy would have bought, at a smaller cost
+— no interface, no separate package boundary to cross for three methods
+that all live in the one file already wiring `/token`'s shared client
+authentication. `internal/oauth/grant` itself is consequently dead code:
+kept here, not deleted, because removing an unused package is its own
+decision, not a side effect of documenting that it was never adopted.
 
 ---
 
@@ -999,3 +1011,37 @@ than inventing a new shape.
 No rate limiter is wired (the same deferred-and-documented choice
 `tokenGroup` and `jwksGroup` already make for their own routes): no RS-/RF-
 id here asks for one.
+
+---
+
+## 19. Flow 7 — `POST /token`, `client_credentials` (RFC 6749 §4.4, REQUIREMENTS §3.1, #49)
+
+The one grant with no resource owner at all, sharing `handleAuthorizationCode`
+and `handleRefreshToken`'s own client authentication (`authenticateClient`,
+`ServeHTTP`) but none of their PKCE, code or redirect machinery — none of
+it protects anything when there is no browser step to intercept.
+
+1. Authenticate the client (shared with Flow 2/3/4). A **public** client
+   reaches this point successfully authenticated — `authenticateClient`
+   never required a secret from one — so confidentiality is checked here
+   instead: not confidential → `unauthorized_client` (RFC 6749 §5.2).
+   Confidential but `client_credentials` not in its own registered
+   `GrantTypes` → the same error; being confidential is necessary, not
+   sufficient.
+2. Requested scope ⊆ the client's own registered `Scopes` → `invalid_scope`
+   otherwise, the same check `/authorize` already applies to
+   `authorization_code` (REQUIREMENTS §3.1's "scopes limited to the
+   client's registration").
+3. `issueAccessToken(client, client.ID, scope)` — the same function Flow 2
+   step 5 and Flow 3 step 7 share, with `client.ID` standing in for the
+   subject a user-driven grant would have. If `scope` happens to include
+   `openid` (a client registered for both `client_credentials` and OIDC
+   scopes, however unusual), the token still gets the RS-08 userinfo
+   audience Flow 2 step 6 adds — nothing here excludes it — but this
+   handler never calls `issueIDToken` regardless, so no `id_token` is
+   ever produced: there is no user for one to describe.
+4. Respond with `Cache-Control: no-store` (RS-26, shared with every other
+   `/token` grant). No `refresh_token`: this grant has no issuance path
+   for one, unlike `authorization_code`'s conditional one — the client
+   can always obtain a fresh access token by presenting its own
+   credentials again.
