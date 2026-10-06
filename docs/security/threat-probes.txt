@@ -1,0 +1,153 @@
+threat probes — 2026-10-06, local development machine
+
+$ docker compose up -d
+$ go run ./cmd/seed
+$ ./scripts/probe-threats.sh | tee docs/security/threat-probes.txt
+
+usher threat probes -- 2026-10-06T23:14:18Z
+against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resource server)
+
+=== shared setup: one real authorization_code exchange ===
+  access_token, refresh_token, id_token obtained for admin@example.com via demo-client
+
+=== T-02 -- open redirect through redirect_uri (RF-01, RS-02, RS-28) ===
+  PASS  an unregistered redirect_uri gets a local 400, never a 3xx to the attacker's own host
+
+=== T-03 -- CSRF on the OAuth redirect / state (RS-03) ===
+  PASS  state is echoed unchanged on both the error and the success /authorize redirect
+  NOTE  this protects only a client that checks the state it gets back -- usher returns it unchanged and cannot enforce the check (T-03's residual)
+
+=== T-04 -- mix-up between authorization servers (RS-29) ===
+  PASS  iss is present on both the error and the success /authorize redirect
+  NOTE  same shape as T-03 -- the client must compare iss itself; usher only supplies it (T-04's residual)
+
+=== T-05 -- token forgery: alg:none and key confusion (RS-06, RS-07) ===
+  PASS  a real access token's header names RS256 -- the algorithm is never left to the token to choose
+  PASS  a hand-forged alg:none token is rejected (401) -- the allow-list is fixed at construction, never read from the token
+
+=== T-06 -- wrong token in the wrong place (RS-08, RS-19, RS-30) ===
+  PASS  an ID token presented as an API credential at /userinfo is rejected (401) -- an ID token is never an API credential
+
+=== T-20 -- scope escalation and consent abuse (RF-05, RF-13, RS-34) ===
+  PASS  a refresh requesting more scope than the original grant covered is refused (invalid_scope), not silently widened
+  PASS  re-/authorize for a wider scope with an existing session re-prompts for consent, it is not silently widened
+  NOTE  a user who clicks allow on an honest-looking consent screen has consented -- the screen's wording is the only defence and it is not a requirement (T-20's residual)
+
+=== T-07 -- stolen refresh token (RF-04, RF-12, RS-10, RS-11, RS-34) ===
+  PASS  reusing an already-rotated refresh token returns invalid_grant -- reuse detected
+  PASS  reuse revoked the whole family -- the legitimately-rotated token is dead too, atomically
+  NOTE  reuse detection needs the legitimate client to come back; if the attacker refreshes first and the victim never does, the attacker holds the family until it expires -- a cost ADR-0012 accepts (T-07's residual)
+
+=== T-01 -- authorization code interception and replay (RS-01, RS-04, RS-05, RS-24) ===
+  PASS  replaying the shared setup's own already-consumed code returns invalid_grant, no second token issued
+  NOTE  a replay after the tombstone expires or Redis loses it is an ordinary invalid_grant too -- only the *detection* is bounded, the code stays unusable either way (T-01's residual)
+
+=== T-08 -- stolen access token (RF-06, RF-12, RS-24, RS-26) ===
+  PASS  /revoke accepts the access token (200)
+  PASS  the resource server reached DIRECTLY still accepts the revoked token -- the stated residual (ADR-0014): a direct call never consults the denylist, TTL is the only bound
+  PASS  /introspect still reports active:true for the revoked access token -- introspection is purely cryptographic/claims-based and never consults the gateway's denylist either, consistent with ADR-0014 and not a separate bug
+  GAP   the gateway's OWN denylist enforcement (RF-06) cannot be probed: internal/proxy.NewHandler is never wired into cmd/usher/main.go, so there is no live /api/** route to send a revoked token through -- see #104
+
+=== T-13 -- identity header spoofing (RS-17, RS-18, RI-04) ===
+  PASS  the resource server ignores a spoofed X-Auth-Subject header and reports the real token's own subject (RS-18/RI-04's independent defense)
+  GAP   the gateway's OWN header-stripping (RS-17, allow-list before inject) cannot be probed: no live /api/** route exists yet -- see #104
+
+=== T-10 -- user enumeration (RS-14, RS-25, RS-33) ===
+  PASS  existing-user-wrong-password and non-existent-identifier return the identical status (200)
+  NOTE  the timing half of RS-14 is a statistical property measured outside this script -- see scripts/timing-login and docs/security/timing-login-baseline.txt
+
+=== T-11 -- session fixation and hijacking at the AS (RS-12b, RS-27, RS-31) ===
+  PASS  login rotates both the CSRF cookie and issues a new session cookie (RS-12b's two rotations)
+  NOTE  an XSS on the AS origin (T-21) can act within the session without ever reading the cookie -- rotation does not defend against that (T-11's residual)
+
+=== T-12 -- forged form submissions and clickjacking (RS-12a, RS-32) ===
+  PASS  X-Frame-Options: DENY and CSP frame-ancestors 'none' are both present on the login page
+  PASS  /login without a valid CSRF token is rejected (403), never accepted
+
+=== T-14 -- credential leakage through side channels (RS-10, RS-15, RS-16, RS-23, RS-24, RS-25, RS-26) ===
+  PASS  every credential-bearing endpoint (/token, /revoke, /introspect, /userinfo) responds with Cache-Control: no-store
+  PASS  a failed grant's error body carries no internal detail -- RFC 6749 §5.2's fixed codes (RS-25)
+
+=== T-17 -- upstream failure cascading into the gateway, or leaking through it (RS-20, RS-21, RI-02) ===
+  GAP   entirely about the gateway's own ErrorHandler and bastion breaker; no live /api/** route exists to drive an upstream failure through it -- see #104
+
+=== T-18 -- signing key compromise ===
+  GAP   not probeable from outside by design: no endpoint can reveal whether the mounted keyset stayed confined to its mount. Custody and rotation are process controls (ADR-0015), verified by review, not an HTTP probe.
+
+=== T-19 -- loss or forgery of the audit trail ===
+  GAP   not probeable from outside by design: no endpoint confirms delivery to or tampering with crier. The one fact that must survive -- a family revoked for reuse -- is also recorded on the family row in Postgres (ADR-0017); T-07's probe above exercises exactly that path.
+
+=== T-21 -- script injection in the login and consent pages (RS-32, RS-36) ===
+  PASS  the login page's one inline script carries the exact per-request nonce the CSP header names
+  NOTE  html/template's own escaping (RS-36) is exercised by usher's Go test suite with a negative control; a black-box probe cannot inject through client_id or scope here without registering a malicious client, which is out of this script's scope
+
+=== T-09 -- credential stuffing and password guessing (RS-13, RS-22, RS-35) ===
+  PASS  repeated wrong-password guesses against one account get rate-limited (429) after 3 attempts
+  NOTE  a slow, distributed attack under both the IP and account thresholds still succeeds against a weak password; without MFA that is this design's stated ceiling (T-09's residual, §1.1)
+
+=== T-15 -- denial of service against the AS (RF-07, RS-09, RS-21, RS-22, RS-33) ===
+  PASS  the rate limiter answers with 429 and Retry-After: 1 before anything downstream is touched
+  PASS  the AS process still answers /healthz normally while a client is being rate-limited elsewhere
+  NOTE  a volumetric L3/L4 flood is the infrastructure's problem, not usher's (threat model §7) -- this script only exercises the application-layer limiter
+
+=== T-16 -- rate-limit bypass (RS-22 realip/ADR-0010, RNF-04, RNF-05, RNF-07) ===
+  PASS  spoofing X-Forwarded-For with different values does not split the rate-limit bucket -- remaining keeps decreasing (4 -> 3 -> 2); the key derives from the real peer (ADR-0010)
+  NOTE  the eviction check (RNF-07) is a startup snapshot and, in cluster mode, sees only the masters reachable then (T-16's residual)
+
+=== summary ===
+  PASS=26  FAIL=0  GAP=5
+
+---
+
+Reading this run: every T-nn in docs/THREAT-MODEL.md has either a passing
+probe or an explicit GAP line saying why it has none, per §6's own
+verification rule. All 21 threats are accounted for; nothing is silent.
+
+Five GAPs, in two different categories:
+
+- T-08 and T-13 each have a real, passing probe for their non-gateway half
+  (the resource server's own independent defense, RS-18/RI-04) plus a GAP
+  for their gateway half. T-17 is entirely about the gateway. All three GAPs
+  share one root cause: internal/proxy.NewHandler is built and unit-tested
+  (#40-#42) but was never wired into cmd/usher/main.go when this script was
+  written, so there is no live /api/** route to send a request through.
+  Filed as #104; closing it turns these three GAPs into probes, not a
+  rewrite of this script.
+- T-18 and T-19 are GAPs by design, not by gap in coverage: no HTTP
+  endpoint can answer "did the mounted keyset leak" or "did an audit event
+  reach crier" from outside, so no probe for either will ever exist here.
+  §6 calls this out explicitly rather than asking for one.
+
+Two bugs were found and fixed while building this script, not by it:
+
+- cmd/usher/main.go's loginLimiter and authorizeLimiter shared one Redis
+  key function (the client's bare IP) despite being configured with
+  different (burst, perSecond) tiers -- moat/ratelimit.Store.TakeN keys
+  purely by that string, so the two limiters collided on one bucket.
+  Confirmed live: six requests to /consent alone drove /authorize's own
+  reported Remaining from 19 to 0. Fixed with namespacedKeyFunc
+  (cmd/usher/main.go), regression-tested in cmd/usher/main_test.go with a
+  negative control seen failing before the fix.
+- scripts/timing-login's own sibling, check-readme-examples.sh, is
+  unrelated; the bug here was in this script's own early draft, not in
+  product code: an &#43; entity in a CSP nonce's HTML attribute (html/
+  template correctly escaping a base64 '+') was compared byte-for-byte
+  against the un-escaped CSP header value. Fixed by decoding that one
+  entity before comparing, in probe_t21.
+
+T-01's own probe (replaying an already-consumed code) revokes the whole
+refresh-token family that code minted -- RS-04's own "replay revokes"
+mitigation, working as intended, not a bug. It runs after T-07 and T-20 in
+this script's own call order for exactly that reason: both still needed
+REFRESH_TOKEN from the same shared grant.
+
+loginLimiter's burst (5) and refill rate (1/s) are tight by design (RS-22).
+A few probes drive dedicated login/consent flows of their own on top of the
+shared setup's, so this script paces itself with short sleeps before them
+rather than racing a limiter that is correctly strict -- the same thing a
+well-behaved real client would have to do.
+
+A re-run without clearing anything by hand passes the same way: the shared
+setup's own authorize_login_consent helper treats "session already
+authenticated" and "consent already granted" as 303s to follow, not errors,
+so this script tolerates being run against a stack it already drove once.
