@@ -100,8 +100,14 @@ func run() error {
 		return fmt.Errorf("build rate-limit key function: %w", err)
 	}
 
-	loginLimiter := ratelimit.New(loginBurst, loginPerSecond, ratelimit.WithStore(rateLimitStore), ratelimit.WithKeyFunc(keyFunc))
-	authorizeLimiter := ratelimit.New(authorizeBurst, authorizePerSecond, ratelimit.WithStore(rateLimitStore), ratelimit.WithKeyFunc(keyFunc))
+	// loginLimiter and authorizeLimiter share rateLimitStore by design
+	// (WithStore's own doc comment), but sharing the bare IP key too would
+	// collide them on one bucket: whichever route a client hit would spend
+	// the other route's budget, collapsing RS-22's two deliberately
+	// different tiers into one. namespacedKeyFunc keeps the shared store
+	// while giving each limiter its own key space.
+	loginLimiter := ratelimit.New(loginBurst, loginPerSecond, ratelimit.WithStore(rateLimitStore), ratelimit.WithKeyFunc(namespacedKeyFunc("login:", keyFunc)))
+	authorizeLimiter := ratelimit.New(authorizeBurst, authorizePerSecond, ratelimit.WithStore(rateLimitStore), ratelimit.WithKeyFunc(namespacedKeyFunc("authorize:", keyFunc)))
 	// accountLimiter's own key is the canonicalized identifier
 	// (internal/identity.Authenticator calls Allow(ctx, canonical)
 	// directly, never through Middleware), so WithKeyFunc would never be
@@ -194,6 +200,24 @@ func run() error {
 // names the property keys.Load needs a number for, not the number
 // itself, so this is this deployment's own choice.
 const lifetimeClockSkew = 30 * time.Second
+
+// namespacedKeyFunc prefixes whatever key fn derives (the client's IP, by
+// REQUIREMENTS §7.2's own topology choice) so that limiters sharing one
+// store do not share a bucket too. Without this, two limiters built with
+// the same fn and the same WithStore collide: moat/ratelimit.Store.TakeN
+// keys purely by the returned string, so a request against one route
+// spends the other route's budget as well. A nil fn is never passed here,
+// but errors still need to propagate rather than be swallowed into an
+// empty key, which moat/ratelimit treats as an error of its own anyway.
+func namespacedKeyFunc(prefix string, fn ratelimit.KeyFunc) ratelimit.KeyFunc {
+	return func(r *http.Request) (string, error) {
+		key, err := fn(r)
+		if err != nil {
+			return "", err
+		}
+		return prefix + key, nil
+	}
+}
 
 // readinessChecks is RNF-10's own dependency list: Postgres, Redis and
 // the signing keyset currently having an active key to sign with. The
