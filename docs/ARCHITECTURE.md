@@ -967,3 +967,35 @@ hand-typed (`id_token_signing_alg_values_supported` from
 No `Cache-Control: no-store`: REQUIREMENTS §7.2's own table marks
 `/.well-known/*, JWKS` `no-store: no` — a discovery document is not the
 credential response RS-26 means.
+
+---
+
+## 18. Flow 6 — `GET`/`POST /logout` (RS-27, RS-31, ADR-0021, #48)
+
+REQUIREMENTS §7.2's own table has no row for this route; the choices below
+are this issue's own, made consistently with the rows that exist rather
+than inventing a new shape.
+
+1. `GET /logout` renders a confirmation form carrying a fresh CSRF token
+   (RS-12a) — the same browser-form group `/login` and `/consent` are in,
+   same reasoning (double-submit CSRF needs the token minted on a safe
+   method first).
+2. `POST /logout`, after the CSRF check: **delete the server-side session
+   first** (`SessionStore.Delete`, RS-31) — before anything else is
+   written to the response, so a crash or a slow client between the
+   delete and the reply still leaves the session gone. Idempotent: no
+   session cookie, or one the store no longer recognizes, is not an error
+   (the same RFC 7009 ambiguity Flow 4's own `/revoke` already applies).
+3. Clear the session cookie (`ExpiredSessionCookie`, `MaxAge=-1`) and set
+   `Clear-Site-Data` (RS-27) — both the browser half, defense in depth
+   over step 2, never the mechanism. `Clear-Site-Data` carries `"cache",
+   "storage"` only, never `"cookies"` (ADR-0021) — usher's own `__Host-`
+   session cookie is already gone by step 3's own first half regardless,
+   and omitting `cookies` is what keeps this logout from also clearing
+   cookies other applications on the same registrable domain set for
+   themselves.
+4. Render a plain confirmation page.
+
+No rate limiter is wired (the same deferred-and-documented choice
+`tokenGroup` and `jwksGroup` already make for their own routes): no RS-/RF-
+id here asks for one.

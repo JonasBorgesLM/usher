@@ -36,6 +36,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
+| [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
 
 ## Reopening criteria on the record
 
@@ -58,4 +59,7 @@ decided is the one that gets implemented by accident.
 
 | Question | Blocks | Where |
 | --- | --- | --- |
-| Whether `Clear-Site-Data: "cookies"` on logout may clear the whole registrable domain | Phase 7 | REQUIREMENTS RS-27 |
+
+None currently open. The one entry this table held — whether
+`Clear-Site-Data: "cookies"` on logout may clear the whole registrable
+domain — was decided in [ADR-0021](0021-clear-site-data-omits-cookies-on-logout.md) (#48).
