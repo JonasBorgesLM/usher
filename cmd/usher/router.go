@@ -35,7 +35,7 @@ import (
 	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
 
-//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl
+//go:embed templates/login.html.tmpl templates/logged_in.html.tmpl templates/authorize_error.html.tmpl templates/consent.html.tmpl templates/consent_error.html.tmpl templates/logout.html.tmpl templates/logged_out.html.tmpl
 var templateFS embed.FS
 
 // routerDeps is everything newRouter needs. Each field is an interface or a
@@ -113,6 +113,7 @@ type routerDeps struct {
 var routeGroups = map[string]routeGroup{
 	"/login":                            browserForms,
 	"/consent":                          browserForms,
+	"/logout":                           browserForms,
 	"/healthz":                          operational,
 	"/readyz":                           operational,
 	"/authorize":                        authorizeGroup,
@@ -134,6 +135,8 @@ func newRouter(deps routerDeps) *chi.Mux {
 	loginTmpl := template.Must(template.ParseFS(templateFS, "templates/login.html.tmpl"))
 	loggedInTmpl := template.Must(template.ParseFS(templateFS, "templates/logged_in.html.tmpl"))
 	authorizeErrorTmpl := template.Must(template.ParseFS(templateFS, "templates/authorize_error.html.tmpl"))
+	logoutTmpl := template.Must(template.ParseFS(templateFS, "templates/logout.html.tmpl"))
+	loggedOutTmpl := template.Must(template.ParseFS(templateFS, "templates/logged_out.html.tmpl"))
 
 	authorize := &authorizeHandler{
 		clients:      deps.Clients,
@@ -201,6 +204,13 @@ func newRouter(deps routerDeps) *chi.Mux {
 	discovery := &discoveryHandler{
 		issuer: deps.Issuer,
 		logger: deps.Logger,
+	}
+
+	logout := &logoutHandler{
+		sessions:      deps.Sessions,
+		logoutTmpl:    logoutTmpl,
+		loggedOutTmpl: loggedOutTmpl,
+		logger:        deps.Logger,
 	}
 
 	// bearerValidator checks an access token's signature and claim set
@@ -271,6 +281,18 @@ func newRouter(deps routerDeps) *chi.Mux {
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.get)))
 	r.Method(http.MethodPost, "/consent",
 		browserForms.wrap(deps.LoginLimiter, deps.CSRFProtector, http.HandlerFunc(consent.post)))
+
+	// /logout carries no rate limiter: unlike /login, nothing here cites
+	// an RS-/RF- id asking for one, the same reasoning tokenGroup's own
+	// comment gives for /token. clearSiteData (RS-27, ADR-0021) wraps
+	// only the POST handler itself -- the action that actually logs out,
+	// not the GET confirmation form -- so it fires exactly once, on the
+	// response that does the logging out.
+	clearSiteData := secureheaders.ClearSiteData(secureheaders.SiteDataCache, secureheaders.SiteDataStorage)
+	r.Method(http.MethodGet, "/logout",
+		browserForms.wrap(nil, deps.CSRFProtector, http.HandlerFunc(logout.get)))
+	r.Method(http.MethodPost, "/logout",
+		browserForms.wrap(nil, deps.CSRFProtector, clearSiteData(http.HandlerFunc(logout.post))))
 
 	r.Method(http.MethodPost, "/token",
 		tokenGroup.wrap(nil, nil, token))
