@@ -27,6 +27,12 @@ type UserStore interface {
 	// identically either way.
 	ByIdentifier(ctx context.Context, identifier string) (u User, ok bool, err error)
 
+	// ByID looks up by the access token's own sub claim (RF-05's own
+	// gateway-side role lookup, #104's follow-up) — the login path never
+	// needs this, since it starts from an identifier, not an id; ok=false
+	// for the same "miss is not an error" reason ByIdentifier gives.
+	ByID(ctx context.Context, id string) (u User, ok bool, err error)
+
 	// UpdateHash rehashes on a successful login against weaker-than-current
 	// parameters (RS-13). Never called on a failed attempt.
 	UpdateHash(ctx context.Context, userID, newHash string) error

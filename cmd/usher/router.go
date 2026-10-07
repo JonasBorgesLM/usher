@@ -30,6 +30,7 @@ import (
 	"github.com/JonasBorgesLM/usher/internal/keys"
 	"github.com/JonasBorgesLM/usher/internal/oauth"
 	"github.com/JonasBorgesLM/usher/internal/proxy"
+	"github.com/JonasBorgesLM/usher/internal/rbac"
 	"github.com/JonasBorgesLM/usher/internal/session"
 	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
@@ -99,6 +100,18 @@ type routerDeps struct {
 	// already has.
 	GatewayUpstream *url.URL
 	GatewayAudience string
+
+	// GatewayPermission, GatewayRoles and GatewayAuthorizer are RF-05's
+	// own half of the same row (#104's follow-up): the permission string
+	// checked against scope ∩ role, the lookup that resolves a subject's
+	// role, and the Authorizer that computes the intersection. A nil
+	// GatewayAuthorizer means no RBAC check runs at all -- this
+	// repository's own test suite that does not care about RBAC leaves
+	// it unset, the same "absent by default" shape GatewayUpstream
+	// already has for the gateway as a whole.
+	GatewayPermission string
+	GatewayRoles      proxy.RoleLookup
+	GatewayAuthorizer *rbac.Authorizer
 
 	// ConsumerJWKSCacheTTL is /.well-known/jwks.json's own Cache-Control
 	// max-age (#33) -- the same duration RS-09's retirement formula was
@@ -350,10 +363,13 @@ func newRouter(deps routerDeps) *chi.Mux {
 				PathPrefix: "/api",
 				Upstream:   deps.GatewayUpstream,
 				Audience:   deps.GatewayAudience,
+				Permission: deps.GatewayPermission,
 				Breaker:    breaker,
 			},
 			bearerValidator,
 			deps.Denylist,
+			deps.GatewayRoles,
+			deps.GatewayAuthorizer,
 			deps.Logger,
 		)
 		r.Mount("/api", gatewayGroup.wrap(nil, nil, http.StripPrefix("/api", gatewayHandler)))

@@ -50,6 +50,47 @@ func TestUserStore_ByIdentifier_FoundAndNotFound(t *testing.T) {
 	})
 }
 
+func TestUserStore_ByID_FoundAndNotFound(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	store := NewUserStore(pool)
+
+	id, err := store.CreateUser(ctx, SeedUser{
+		Identifier:   "found-by-id@example.com",
+		PasswordHash: testPasswordHash,
+		Role:         "admin",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	t.Run("found", func(t *testing.T) {
+		u, ok, err := store.ByID(ctx, id)
+		if err != nil {
+			t.Fatalf("ByID: %v", err)
+		}
+		if !ok {
+			t.Fatal("ByID: ok=false for a user that exists")
+		}
+		if u.ID != id || u.Identifier != "found-by-id@example.com" || u.PasswordHash != testPasswordHash || u.Role != "admin" {
+			t.Errorf("ByID: got %+v", u)
+		}
+	})
+
+	t.Run("not found returns ok=false, not an error", func(t *testing.T) {
+		u, ok, err := store.ByID(ctx, "00000000-0000-0000-0000-000000000000")
+		if err != nil {
+			t.Fatalf("ByID: unexpected error for a missing user: %v", err)
+		}
+		if ok {
+			t.Fatalf("ByID: ok=true for a user that was never created: %+v", u)
+		}
+	})
+}
+
 func TestUserStore_UpdateHash(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()

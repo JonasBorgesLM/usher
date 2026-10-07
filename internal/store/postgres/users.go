@@ -45,6 +45,23 @@ func (s *UserStore) ByIdentifier(ctx context.Context, identifier string) (identi
 	return u, true, nil
 }
 
+// ByID implements identity.UserStore. Mirrors ByIdentifier's own "miss is
+// ok=false, not an error" shape.
+func (s *UserStore) ByID(ctx context.Context, id string) (identity.User, bool, error) {
+	var u identity.User
+	err := s.pool.QueryRow(ctx,
+		"SELECT id, identifier, password_hash, role FROM users WHERE id = $1",
+		id,
+	).Scan(&u.ID, &u.Identifier, &u.PasswordHash, &u.Role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return identity.User{}, false, nil
+	}
+	if err != nil {
+		return identity.User{}, false, fmt.Errorf("postgres: look up user by id: %w", err)
+	}
+	return u, true, nil
+}
+
 // ErrUserNotFound reports that UpdateHash was given a userID with no
 // matching row — distinct from ByIdentifier's ok=false, because a rehash is
 // only ever attempted right after a successful lookup, so a miss here means
