@@ -898,9 +898,13 @@ func (a *Authorizer) RequirePermission(permission string) func(http.Handler) htt
 // request's own granted scope and role, set by whatever validates the
 // bearer token before RequirePermission's handler runs. This package
 // has no opinion on how that happens — ADR-0006's own [auth] → [rbac]
-// chain order is internal/proxy's job, M6, not yet built; these two
-// functions are what lets RequirePermission be fully testable (a table
-// over scope/role combinations) without that chain existing yet.
+// chain order is internal/proxy.NewHandler's own job (#104's follow-up,
+// Flow 9 below): it validates the token, resolves the subject's role,
+// calls WithRole(WithScope(ctx, claims.Scope), role), and passes the
+// result to RequirePermission(route.Permission). These two functions
+// are what let RequirePermission be fully testable (a table over
+// scope/role combinations) without that chain existing — which is also
+// exactly how internal/proxy's own tests use them today.
 func WithScope(ctx context.Context, scope []string) context.Context
 func ScopeFrom(ctx context.Context) []string
 func WithRole(ctx context.Context, role string) context.Context
@@ -910,8 +914,12 @@ func RoleFrom(ctx context.Context) string
 The role vocabulary itself (which permission strings exist, which roles
 hold which) is deliberately not this package's decision — `cmd/seed`'s
 own `seedRoles` already calls `"admin"` and `"user"` provisional
-placeholders for exactly that reason. Whoever constructs the `Authorizer`
-(M6's gateway wiring) supplies the real `Permissions` map.
+placeholders for exactly that reason. `cmd/usher/main.go` constructs the
+real `Authorizer` (`gatewayRolePermissions`) and the `RoleLookup` that
+resolves a subject to a role (`userRoleLookup`, adapting
+`identity.UserStore` — `internal/proxy` never imports `internal/identity`
+directly, the same boundary this file's own package doc already
+promises).
 
 ---
 
@@ -1126,16 +1134,35 @@ than one guaranteed to fail every request.
    constructed once, read here and written there). A denylist error
    collapses to "revoked" (RNF-04: infrastructure failure denies), never
    to "allowed." Found or errored → 401.
-6. Inject `X-Auth-Subject`, `X-Auth-Client`, `X-Auth-Scope` (RI-04) —
+6. RF-05, the `[rbac]` half of REQUIREMENTS §7.2's `/api/**` row, built
+   on `internal/rbac`'s own intended seam rather than a second,
+   parallel mechanism: resolve the subject's role through `RoleLookup`
+   (`userRoleLookup` in `cmd/usher/main.go`, adapting
+   `identity.UserStore.ByID` — `internal/proxy` never imports
+   `internal/identity` directly), attach it and the token's own scope
+   to the request context (`rbac.WithRole(rbac.WithScope(ctx,
+   claims.Scope), role)`), and run the rest of this handler through
+   `authorizer.RequirePermission(route.Permission)`. A role-lookup
+   failure → 401 (RNF-04 again: the subject itself could not be
+   resolved, closer to "an invalid credential" than to "a known
+   identity without permission"); a resolved role lacking the
+   permission → 403, `RequirePermission`'s own response, not a second
+   one this handler writes itself. `authorizer == nil` skips this step
+   entirely — the same "absent is a deliberate, valid choice"
+   `route.Breaker` already has; a non-nil `authorizer` with an empty
+   `route.Permission` panics instead (RF-05's own "wiring mistake must
+   be loud," the same reasoning `ValidateRoute`'s `Audience` check
+   already applies).
+7. Inject `X-Auth-Subject`, `X-Auth-Client`, `X-Auth-Scope` (RI-04) —
    only after every check above passed, and only these three headers in
    that namespace ever get set, since step 2 already guaranteed nothing
    else under it survived from the client.
-7. Forward the original `Authorization` header unchanged (ADR-0007): the
+8. Forward the original `Authorization` header unchanged (ADR-0007): the
    resource server re-validates the same token itself, with its own
-   audience and its own JWKS fetch (RS-18) — it never trusts step 6's
+   audience and its own JWKS fetch (RS-18) — it never trusts step 7's
    headers for an authorization decision (`RI-04`'s own contract, which
    this gateway cannot enforce on a consumer reached outside it).
-8. The round trip to the upstream runs through one named `bastion.Breaker`
+9. The round trip to the upstream runs through one named `bastion.Breaker`
    (ADR-0016, RI-02) and RS-21's explicit timeouts
    (`newUpstreamTransport`). A breaker rejection (`ErrOpenState`,
    `ErrTooManyRequests`) answers `503` + `Retry-After`, never the bare
@@ -1144,16 +1171,25 @@ than one guaranteed to fail every request.
    retrying immediately against a `502` would be doing exactly what the
    breaker exists to stop. Neither response leaks the upstream's own
    host, port or a stack trace.
-9. The upstream's response body is capped at 10 MiB before any of it
-   reaches the client (RS-21) — a misbehaving or malicious upstream
-   streaming indefinitely cannot exhaust the gateway's own memory.
+10. The upstream's response body is capped at 10 MiB before any of it
+    reaches the client (RS-21) — a misbehaving or malicious upstream
+    streaming indefinitely cannot exhaust the gateway's own memory.
 
-**Not built here:** the `[rbac]` half of REQUIREMENTS §7.2's `/api/**`
-row. `internal/rbac.RequirePermission` already exists for whenever that
-phase picks this chain up (§15's own comment on `WithScope`/`WithRole`
-still holds: "M6, not yet built" refers to this specific chain — #104's
-own scope was making the route exist and reachable, not RBAC, and
-deliberately did not expand to cover it). The per-token/per-account rate
-limit the same table row names is left unwired for the same "defer, do
+**This deployment's own role vocabulary** (`gatewayRolePermissions` in
+`cmd/usher/main.go`) grants both seeded roles, `admin` and `user`
+(`cmd/seed`'s own `seedRoles` calls both "provisional placeholders"),
+the one permission this route checks, `widgets:read` — there is no
+product reason in this repository to restrict an ordinary user from a
+read-only demo resource. RF-05 is still genuinely enforced: a role
+absent from the map, or without this permission, is refused, proven in
+`internal/proxy`'s own test suite with a role neither seeded role uses.
+`demo-client`'s own registered scopes (`clients.dev.json`) include
+`widgets:read` for the same reason they include `openid` — RF-05's
+intersection needs the permission in the token's own granted scope, not
+only in the role's permissions; a client never registered for it could
+never carry it regardless of role.
+
+**Not built here:** the per-token/per-account rate limit REQUIREMENTS
+§7.2's `/api/**` row also names, left unwired for the same "defer, do
 not invent a weighting scheme no RS-/RF- id asks for yet" reason
 `tokenGroup` already gives for `/token`.

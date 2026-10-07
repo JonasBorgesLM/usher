@@ -31,6 +31,7 @@ import (
 	"github.com/JonasBorgesLM/usher/internal/config"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/keys"
+	"github.com/JonasBorgesLM/usher/internal/rbac"
 	"github.com/JonasBorgesLM/usher/internal/store/postgres"
 	"github.com/JonasBorgesLM/usher/internal/store/redis"
 )
@@ -51,7 +52,47 @@ const (
 	crierBufferSize       = 1024
 	crierRequestTimeout   = 5 * time.Second
 	shutdownDrainDeadline = 10 * time.Second
+
+	// gatewayWidgetsReadPermission is RF-05's own permission string for
+	// the one route this deployment proxies, cmd/resource-server's
+	// GET /widgets. REQUIREMENTS names the property (effective
+	// permission = scope ∩ role), not a permission vocabulary — this
+	// deployment's own choice, like the rate-limit tiers above.
+	gatewayWidgetsReadPermission = "widgets:read"
 )
+
+// gatewayRolePermissions is this deployment's own role vocabulary for
+// the one gateway route it proxies. cmd/seed's own seedRoles comment
+// already calls "admin" and "user" provisional placeholders; both get
+// read access to the demo resource here because nothing about a
+// read-only demo gives a reason to restrict an ordinary user from it —
+// RF-05 is enforced (a role absent from this map, or without this
+// permission, is refused) even though neither of the two roles that
+// exist today is the one it refuses.
+var gatewayRolePermissions = rbac.Permissions{
+	"admin": {gatewayWidgetsReadPermission},
+	"user":  {gatewayWidgetsReadPermission},
+}
+
+// userRoleLookup adapts identity.UserStore to proxy.RoleLookup —
+// internal/proxy never imports internal/identity directly (its own
+// package doc's boundary), so this small shim is where the two meet,
+// the same role main.go already plays for every other pair of
+// internal/ packages that must not import each other (ADR-0001).
+type userRoleLookup struct {
+	users identity.UserStore
+}
+
+func (l userRoleLookup) RoleOf(ctx context.Context, subject string) (string, error) {
+	u, ok, err := l.users.ByID(ctx, subject)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("userRoleLookup: no user with id %q", subject)
+	}
+	return u.Role, nil
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -166,6 +207,9 @@ func run() error {
 		Authenticator:        authenticator,
 		GatewayUpstream:      gatewayUpstream,
 		GatewayAudience:      cfg.GatewayAPIAudience,
+		GatewayPermission:    gatewayWidgetsReadPermission,
+		GatewayRoles:         userRoleLookup{users: userStore},
+		GatewayAuthorizer:    rbac.New(gatewayRolePermissions),
 		Sessions:             redis.NewSessionStore(redisClient, cfg.SessionIdleTTL, cfg.SessionAbsoluteTTL),
 		Challenges:           redis.NewChallengeStore(redisClient),
 		CSRFProtector:        csrfProtector,

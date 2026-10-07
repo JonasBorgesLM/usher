@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/JonasBorgesLM/bastion"
+	"github.com/JonasBorgesLM/usher/internal/rbac"
 	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
 
@@ -39,13 +40,35 @@ type Denylist interface {
 	Add(ctx context.Context, jti string, ttl time.Duration) error
 }
 
+// RoleLookup resolves the authenticated subject's own role for RF-05's
+// scope ∩ role intersection — the [rbac] half of REQUIREMENTS §7.2's
+// /api/** row, wired in alongside [auth] rather than as a separate
+// middleware layer, since there is no seam between the two inside this
+// handler for one to sit in (NewHandler validates the token, checks the
+// denylist, injects headers and proxies in one function, not a chain).
+// internal/identity.User.Role is the real backing field; this interface
+// exists so this package never imports internal/identity directly — the
+// same "tokens are opaque strings here" boundary this file's own package
+// doc already promises extends to "and so are subjects."
+type RoleLookup interface {
+	// RoleOf returns subject's role, or a non-nil error if it cannot be
+	// resolved (no such user, or a lookup failure) — the caller treats
+	// either the same way NewHandler already treats a denylist error
+	// (RNF-04: infrastructure or data failure denies, never allows).
+	RoleOf(ctx context.Context, subject string) (string, error)
+}
+
 // Route is one proxied route's static configuration. Audience is required
 // — ValidateRoute, called by NewHandler itself (#41), refuses a Route
-// without one rather than silently serving requests for it.
+// without one rather than silently serving requests for it. Permission is
+// required whenever NewHandler is given a non-nil *rbac.Authorizer (RF-05)
+// — checked by NewHandler itself, not ValidateRoute, since "required" here
+// is conditional on a parameter ValidateRoute never sees.
 type Route struct {
 	PathPrefix string
 	Upstream   *url.URL
 	Audience   string
+	Permission string           // RF-05: checked against scope ∩ role when an Authorizer is given to NewHandler
 	Breaker    *bastion.Breaker // RI-02, ADR-0016: one named breaker per upstream — wired in #42; this issue does not call it yet
 }
 
@@ -204,13 +227,23 @@ func unauthorized(w http.ResponseWriter) {
 // cannot reuse discardLogger there, but the contract is the same one
 // every handler in that package already follows.
 //
+// roles and authorizer are RF-05's own pair: a nil authorizer means no
+// RBAC check runs at all for this Route — the same "absent is a
+// deliberate, valid choice" shape route.Breaker already has — but a
+// non-nil authorizer with an empty route.Permission panics, the same
+// "wiring mistake must be loud" reasoning ValidateRoute's own Audience
+// check already follows.
+//
 // Panics if route fails ValidateRoute (RS-19, RNF-05) — the same
 // "refuses to start" this package's own doc comment promises, applied
 // here directly since nothing yet loads a Route from outside Go code
 // for a startup-time error to attach to instead.
-func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist, logger *slog.Logger) http.Handler {
+func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denylist, roles RoleLookup, authorizer *rbac.Authorizer, logger *slog.Logger) http.Handler {
 	if err := ValidateRoute(route); err != nil {
 		panic(err)
+	}
+	if authorizer != nil && route.Permission == "" {
+		panic(fmt.Sprintf("proxy: route %q has an Authorizer but no Permission (RF-05)", route.PathPrefix))
 	}
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -284,10 +317,34 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 		// package ever sets, and stripIdentityHeaders already
 		// guaranteed nothing else under that prefix survived from the
 		// client by the time execution reaches here.
-		r.Header.Set("X-Auth-Subject", claims.Subject)
-		r.Header.Set("X-Auth-Client", claims.ClientID)
-		r.Header.Set("X-Auth-Scope", strings.Join(claims.Scope, " "))
+		serveProxied := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Header.Set("X-Auth-Subject", claims.Subject)
+			r.Header.Set("X-Auth-Client", claims.ClientID)
+			r.Header.Set("X-Auth-Scope", strings.Join(claims.Scope, " "))
+			rp.ServeHTTP(w, r)
+		})
 
-		rp.ServeHTTP(w, r)
+		if authorizer == nil {
+			serveProxied.ServeHTTP(w, r)
+			return
+		}
+
+		// RF-05: the [rbac] half of REQUIREMENTS §7.2's /api/** row,
+		// built on internal/rbac's own intended seam
+		// (WithScope/WithRole + RequirePermission, documented on that
+		// package itself) rather than calling Authorizer.Allowed
+		// directly — ADR-0006's own [auth] → [rbac] chain order, with
+		// this handler playing [auth]'s part. A role-lookup failure
+		// collapses to unauthorized() (RNF-04 again): the subject
+		// itself could not be resolved, which is closer to "an invalid
+		// credential" than to "a known identity without permission" —
+		// RequirePermission's own 403 is reserved for that second case.
+		role, err := roles.RoleOf(r.Context(), claims.Subject)
+		if err != nil {
+			unauthorized(w)
+			return
+		}
+		ctx := rbac.WithRole(rbac.WithScope(r.Context(), claims.Scope), role)
+		authorizer.RequirePermission(route.Permission)(serveProxied).ServeHTTP(w, r.WithContext(ctx))
 	})
 }

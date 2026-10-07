@@ -49,6 +49,15 @@ func (f *fakeUserStore) ByIdentifier(_ context.Context, identifier string) (iden
 	return u, ok, nil
 }
 
+func (f *fakeUserStore) ByID(_ context.Context, id string) (identity.User, bool, error) {
+	for _, u := range f.users {
+		if u.ID == id {
+			return u, true, nil
+		}
+	}
+	return identity.User{}, false, nil
+}
+
 func (f *fakeUserStore) UpdateHash(context.Context, string, string) error { return nil }
 
 // fakeSessionStore is session_test.go's own fixture, reimplemented here:

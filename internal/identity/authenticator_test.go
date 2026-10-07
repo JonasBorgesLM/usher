@@ -33,6 +33,15 @@ func (f *fakeUserStore) ByIdentifier(_ context.Context, identifier string) (User
 	return u, ok, nil
 }
 
+func (f *fakeUserStore) ByID(_ context.Context, id string) (User, bool, error) {
+	for _, u := range f.users {
+		if u.ID == id {
+			return u, true, nil
+		}
+	}
+	return User{}, false, nil
+}
+
 func (f *fakeUserStore) UpdateHash(_ context.Context, _, _ string) error { return nil }
 
 // erroringUserStore returns err from every ByIdentifier call — for proving
@@ -40,6 +49,9 @@ func (f *fakeUserStore) UpdateHash(_ context.Context, _, _ string) error { retur
 type erroringUserStore struct{ err error }
 
 func (e erroringUserStore) ByIdentifier(context.Context, string) (User, bool, error) {
+	return User{}, false, e.err
+}
+func (e erroringUserStore) ByID(context.Context, string) (User, bool, error) {
 	return User{}, false, e.err
 }
 func (erroringUserStore) UpdateHash(context.Context, string, string) error { return nil }

@@ -21,6 +21,7 @@ import (
 	"github.com/lestrrat-go/jwx/v4/jws"
 
 	"github.com/JonasBorgesLM/bastion"
+	"github.com/JonasBorgesLM/usher/internal/rbac"
 	"github.com/JonasBorgesLM/usher/pkg/tokenvalidator"
 )
 
@@ -237,7 +238,7 @@ func TestNewHandler_StripsSpoofedSubjectHeader(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstream, received := capturingUpstream(t, http.StatusOK)
 	denylist := newFakeDenylist()
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-1", []string{"openid"})
 	req := proxyRequest("Bearer "+token, map[string]string{"X-Auth-Subject": "attacker-controlled"})
@@ -267,7 +268,7 @@ func TestNewHandler_StripsUnknownIdentityNamespaceHeader(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstream, received := capturingUpstream(t, http.StatusOK)
 	denylist := newFakeDenylist()
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-2", []string{"openid"})
 	req := proxyRequest("Bearer "+token, map[string]string{"X-Auth-Impersonate": "true"})
@@ -288,7 +289,7 @@ func TestNewHandler_InjectsValidatedClaims(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstream, received := capturingUpstream(t, http.StatusOK)
 	denylist := newFakeDenylist()
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-3", []string{"openid", "profile"})
 	rec := httptest.NewRecorder()
@@ -315,7 +316,7 @@ func TestNewHandler_InjectsValidatedClaims(t *testing.T) {
 func TestNewHandler_MissingBearerToken_Unauthorized(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstream, received := capturingUpstream(t, http.StatusOK)
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, proxyRequest("", nil))
@@ -332,7 +333,7 @@ func TestNewHandler_InvalidToken_Unauthorized(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	other := testRSAKeyPair(t) // token signed by a key this validator never trusts
 	upstream, received := capturingUpstream(t, http.StatusOK)
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	token := testAccessToken(t, other, "jti-4", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -356,7 +357,7 @@ func TestNewHandler_RevokedToken_Unauthorized(t *testing.T) {
 	if err := denylist.Add(context.Background(), "jti-revoked", time.Minute); err != nil {
 		t.Fatalf("seed denylist: %v", err)
 	}
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-revoked", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -383,7 +384,7 @@ func TestNewHandler_DenylistErrorFailsClosed(t *testing.T) {
 	upstream, received := capturingUpstream(t, http.StatusOK)
 	denylist := newFakeDenylist()
 	denylist.containsErr = errors.New("redis unavailable")
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), denylist, nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-5", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -421,7 +422,7 @@ func TestNewHandler_UpstreamFailureLeaksNoDetail(t *testing.T) {
 		t.Fatalf("parse dead upstream URL: %v", err)
 	}
 	route := Route{PathPrefix: "/api", Upstream: u, Audience: testAudience}
-	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-6", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -456,7 +457,7 @@ func TestNewHandler_NoAutomaticRedirectFollowing(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 	token := testAccessToken(t, priv, "jti-7", []string{"openid"})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
@@ -486,7 +487,7 @@ func TestNewHandler_ResponseBodyTruncatedAtLimit(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 	token := testAccessToken(t, priv, "jti-8", []string{"openid"})
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
@@ -572,7 +573,117 @@ func TestNewHandler_PanicsOnRouteWithoutAudience(t *testing.T) {
 			t.Error("NewHandler did not panic on a route with no audience")
 		}
 	}()
-	NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+}
+
+// fakeRoleLookup is this file's own stand-in for the real
+// identity.UserStore-backed adapter cmd/usher builds — a map keyed by
+// subject, so a test can assign testSubject whatever role (or lookup
+// error) it needs without a real UserStore.
+type fakeRoleLookup struct {
+	roles map[string]string
+	err   error
+}
+
+func (f fakeRoleLookup) RoleOf(_ context.Context, subject string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.roles[subject], nil
+}
+
+// TestNewHandler_PanicsOnAuthorizerWithoutPermission is RF-05's own
+// "wiring mistake must be loud": a non-nil Authorizer with no
+// route.Permission panics, the same property
+// TestNewHandler_PanicsOnRouteWithoutAudience already proves for
+// Audience.
+//
+// Negative control: with the `route.Permission == ""` check removed
+// from NewHandler, this test failed -- NewHandler returned a handler
+// instead of panicking. Verified by hand, restored before committing.
+func TestNewHandler_PanicsOnAuthorizerWithoutPermission(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+	route := testRoute(t, upstream)
+	route.Permission = ""
+
+	defer func() {
+		if recover() == nil {
+			t.Error("NewHandler did not panic on a non-nil Authorizer with no route.Permission")
+		}
+	}()
+	NewHandler(route, testValidator(t, priv), newFakeDenylist(), fakeRoleLookup{}, rbac.New(nil), nil)
+}
+
+// TestNewHandler_RBAC_RoleHasPermission_Allowed and the two tests after
+// it are RF-05 itself: effective permission is the intersection of the
+// token's own scope and the subject's role, computed for real now that
+// #104's follow-up wires an Authorizer and RoleLookup through.
+func TestNewHandler_RBAC_RoleHasPermission_Allowed(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	route := testRoute(t, upstream)
+	route.Permission = "widgets:read"
+	roles := fakeRoleLookup{roles: map[string]string{testSubject: "admin"}}
+	authorizer := rbac.New(rbac.Permissions{"admin": {"widgets:read"}})
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), roles, authorizer, nil)
+
+	token := testAccessToken(t, priv, "jti-rbac-1", []string{"widgets:read"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if received() == nil {
+		t.Error("the upstream was never called despite scope ∩ role granting the permission")
+	}
+}
+
+// Negative control: with the `authorizer.Allowed(...)` check (and its
+// surrounding `if authorizer != nil` block) removed from NewHandler,
+// this test failed -- a role with no matching permission still reached
+// the upstream. Verified by hand, restored before committing.
+func TestNewHandler_RBAC_RoleLacksPermission_Forbidden(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	route := testRoute(t, upstream)
+	route.Permission = "widgets:read"
+	roles := fakeRoleLookup{roles: map[string]string{testSubject: "guest"}}
+	authorizer := rbac.New(rbac.Permissions{"admin": {"widgets:read"}})
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), roles, authorizer, nil)
+
+	token := testAccessToken(t, priv, "jti-rbac-2", []string{"widgets:read"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if received() != nil {
+		t.Error("the upstream was called despite a role with no matching permission")
+	}
+}
+
+func TestNewHandler_RBAC_RoleLookupErrorFailsClosed(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	route := testRoute(t, upstream)
+	route.Permission = "widgets:read"
+	roles := fakeRoleLookup{err: errors.New("role store unavailable")}
+	authorizer := rbac.New(rbac.Permissions{"admin": {"widgets:read"}})
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), roles, authorizer, nil)
+
+	token := testAccessToken(t, priv, "jti-rbac-3", []string{"widgets:read"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d (RNF-04: a lookup failure denies)", rec.Code, http.StatusUnauthorized)
+	}
+	if received() != nil {
+		t.Error("the upstream was called despite a role-lookup failure")
+	}
 }
 
 func mustParseURL(t *testing.T, raw string) *url.URL {
@@ -593,7 +704,7 @@ func TestNewHandler_CrossAudienceTokenRefused(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstreamB, receivedB := capturingUpstream(t, http.StatusOK)
 	routeB := testRouteWithAudience(t, upstreamB, testAudienceB)
-	handler := NewHandler(routeB, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(routeB, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	// Signed for RS-A's audience, presented at RS-B's own route.
 	tokenForA := testAccessTokenForAudience(t, priv, "jti-cross", []string{"openid"}, testAudience)
@@ -622,7 +733,7 @@ func TestNewHandler_IDTokenRefused(t *testing.T) {
 	priv := testRSAKeyPair(t)
 	upstream, received := capturingUpstream(t, http.StatusOK)
 	route := testRoute(t, upstream)
-	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	idToken := testIDToken(t, priv, testAudience)
 	rec := httptest.NewRecorder()
@@ -684,7 +795,7 @@ func TestNewHandler_OpenCircuitReturns503WithRetryAfter(t *testing.T) {
 
 	route := testRoute(t, upstream)
 	route.Breaker = breaker
-	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-breaker-open", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -727,7 +838,7 @@ func TestNewHandler_BreakerRejectionDoesNotRetryOutboundCall(t *testing.T) {
 
 	route := testRoute(t, upstream)
 	route.Breaker = breaker
-	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	token := testAccessToken(t, priv, "jti-breaker-noretry", []string{"openid"})
 	rec := httptest.NewRecorder()
@@ -760,7 +871,7 @@ func TestNewHandler_BreakerRejectionLeavesOuterLimiterChargedOnce(t *testing.T) 
 
 	route := testRoute(t, upstream)
 	route.Breaker = breaker
-	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil)
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
 
 	var limiterCalls int32
 	outer := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

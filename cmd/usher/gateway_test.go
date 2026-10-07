@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/JonasBorgesLM/usher/internal/rbac"
 )
 
 // testGatewayAudience is this file's own fixed audience string -- the
@@ -36,11 +38,16 @@ func newGatewayUpstream(t *testing.T) (upstream *httptest.Server, received func(
 // gatewayDeps builds routerDeps with the gateway mounted against
 // upstream, and a client registered with testGatewayAudience so a real
 // /token exchange (issueRealAccessToken, userinfo_test.go) mints a
-// token this route's own audience check (RS-19) accepts.
+// token this route's own audience check (RS-19) accepts. "widgets:read"
+// is added to the client's own registered scopes so the RBAC tests
+// below can request it -- RF-05's intersection needs the permission in
+// the token's own scope, not just in the role's permissions; a client
+// never registered for it could never carry it regardless of role.
 func gatewayDeps(t *testing.T, upstream *httptest.Server) routerDeps {
 	t.Helper()
 	client := testClient()
 	client.Audiences = []string{testGatewayAudience}
+	client.Scopes = append(client.Scopes, "widgets:read")
 	deps := tokenDeps(t, client)
 	deps.Denylist = newFakeDenylist()
 
@@ -51,6 +58,65 @@ func gatewayDeps(t *testing.T, upstream *httptest.Server) routerDeps {
 	deps.GatewayUpstream = u
 	deps.GatewayAudience = testGatewayAudience
 	return deps
+}
+
+// fakeGatewayRoleLookup is this file's own stand-in for the real
+// userRoleLookup adapter main.go builds over identity.UserStore -- a
+// map keyed by subject, so a test can assign testSubject (what
+// issueRealAccessToken's underlying seedCode puts in every token's own
+// sub claim) whatever role it needs without a real UserStore.
+type fakeGatewayRoleLookup map[string]string
+
+func (f fakeGatewayRoleLookup) RoleOf(_ context.Context, subject string) (string, error) {
+	return f[subject], nil
+}
+
+// TestGateway_RBAC_RoleHasPermission_Allowed and the test after it are
+// RF-05 end to end through the real router: the wiring router.go adds
+// to routerDeps (GatewayPermission, GatewayRoles, GatewayAuthorizer),
+// not internal/proxy's own already-covered intersection logic.
+func TestGateway_RBAC_RoleHasPermission_Allowed(t *testing.T) {
+	upstream, _ := newGatewayUpstream(t)
+	deps := gatewayDeps(t, upstream)
+	deps.GatewayPermission = "widgets:read"
+	deps.GatewayRoles = fakeGatewayRoleLookup{testSubject: "admin"}
+	deps.GatewayAuthorizer = rbac.New(rbac.Permissions{"admin": {"widgets:read"}})
+	mux := newRouter(deps)
+	accessToken := issueRealAccessToken(t, deps, mux, []string{"openid", "widgets:read"})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", "Bearer "+accessToken))
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /api/widgets = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+// This test's own negative control is its sibling above: the same
+// wiring, the same permission, only the role differs -- 200 there, 403
+// here. RF-05's own intersection logic (why a role without the
+// permission is refused at all) has its negative control in
+// internal/proxy/proxy_test.go's TestNewHandler_RBAC_RoleLacksPermission
+// _Forbidden; this test is about router.go's own wiring reaching that
+// logic, not about re-proving the logic itself.
+func TestGateway_RBAC_RoleLacksPermission_Forbidden(t *testing.T) {
+	upstream, received := newGatewayUpstream(t)
+	deps := gatewayDeps(t, upstream)
+	deps.GatewayPermission = "widgets:read"
+	deps.GatewayRoles = fakeGatewayRoleLookup{testSubject: "guest"}
+	deps.GatewayAuthorizer = rbac.New(rbac.Permissions{"admin": {"widgets:read"}})
+	mux := newRouter(deps)
+	accessToken := issueRealAccessToken(t, deps, mux, []string{"openid", "widgets:read"})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", "Bearer "+accessToken))
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /api/widgets = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if received() != nil {
+		t.Error("upstream received a request despite a role with no matching permission")
+	}
 }
 
 func getGateway(path, authHeader string) *http.Request {
