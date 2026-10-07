@@ -309,6 +309,15 @@ probe_t20() {
     fail "refresh with an ungranted wider scope did not return invalid_scope: $resp"
   fi
 
+  local rbac_status
+  rbac_status=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")
+  if [ "$rbac_status" = "200" ]; then
+    pass "RF-05's scope ∩ role intersection grants the admin role's widgets:read permission -- the token's own scope (not just the client's) is what RF-05 checks"
+  else
+    fail "the gateway refused an admin-role token with widgets:read in scope (${rbac_status}) -- RF-05 should have granted this"
+  fi
+  note "RF-05's own DENIAL path cannot be shown black-box: both seeded roles (admin, user) are granted widgets:read in this deployment's own role vocabulary (cmd/usher/main.go's gatewayRolePermissions) -- there is no seeded account whose role lacks the permission to request a 403 with. Proven instead in internal/proxy's own test suite (TestNewHandler_RBAC_RoleLacksPermission_Forbidden), with its own negative control"
+
   # Second half: a client asking for genuinely MORE than it has consent for
   # must re-prompt. Uses the second seeded user (whose consent was cleared
   # above) so the first grant here starts from nothing, not from the shared
@@ -675,7 +684,7 @@ fi
 
 # --- shared golden-path flow, reused by most probes below -------------
 header "shared setup: one real authorization_code exchange"
-read -r CODE1 VERIFIER1 <<< "$(authorize_login_consent "openid profile offline_access" "shared")"
+read -r CODE1 VERIFIER1 <<< "$(authorize_login_consent "openid profile offline_access widgets:read" "shared")"
 TOKEN_JSON=$(exchange_code "$CODE1" "$VERIFIER1")
 ACCESS_TOKEN=$(jf "$TOKEN_JSON" access_token)
 REFRESH_TOKEN=$(jf "$TOKEN_JSON" refresh_token)
