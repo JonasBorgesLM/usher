@@ -1,10 +1,10 @@
-threat probes — 2026-10-07, local development machine (updated after #104)
+threat probes — 2026-10-07, local development machine (updated after #104, #111)
 
 $ docker compose up -d
 $ go run ./cmd/seed
 $ ./scripts/probe-threats.sh | tee docs/security/threat-probes.txt
 
-usher threat probes -- 2026-10-07T00:40:05Z
+usher threat probes -- 2026-10-07T01:19:15Z
 against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resource server)
 
 === shared setup: one real authorization_code exchange ===
@@ -30,6 +30,8 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
 
 === T-20 -- scope escalation and consent abuse (RF-05, RF-13, RS-34) ===
   PASS  a refresh requesting more scope than the original grant covered is refused (invalid_scope), not silently widened
+  PASS  RF-05's scope ∩ role intersection grants the admin role's widgets:read permission -- the token's own scope (not just the client's) is what RF-05 checks
+  NOTE  RF-05's own DENIAL path cannot be shown black-box: both seeded roles (admin, user) are granted widgets:read in this deployment's own role vocabulary (cmd/usher/main.go's gatewayRolePermissions) -- there is no seeded account whose role lacks the permission to request a 403 with. Proven instead in internal/proxy's own test suite (TestNewHandler_RBAC_RoleLacksPermission_Forbidden), with its own negative control
   PASS  re-/authorize for a wider scope with an existing session re-prompts for consent, it is not silently widened
   NOTE  a user who clicks allow on an honest-looking consent screen has consented -- the screen's wording is the only defence and it is not a requirement (T-20's residual)
 
@@ -97,27 +99,42 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
   NOTE  the eviction check (RNF-07) is a startup snapshot and, in cluster mode, sees only the masters reachable then (T-16's residual)
 
 === summary ===
-  PASS=29  FAIL=0  GAP=3
+  PASS=30  FAIL=0  GAP=3
 
 ---
 
-Reading this run: this is #52's own report, regenerated after #104 wired
-internal/proxy.NewHandler into cmd/usher/main.go. Every T-nn in
-docs/THREAT-MODEL.md still has either a passing probe or an explicit GAP
-line saying why it has none, per §6's own verification rule.
+Reading this run: this is #52's own report. Two follow-ups updated it
+since its first version (preserved in git history, see this file's own
+commit log):
 
-What changed from the first run (preserved in git history, see this
-file's own commit log): T-08 and T-13 each gained a second PASS line --
-the gateway's own denylist enforcement (RF-06) and the gateway's own
-header handling (RS-17), both now probed through a real, live
-GET/POST /api/widgets, not just inferred from the resource server's own
-independent defense. The access token minted in the shared setup above
-is the same one both probes reuse; T-13 now runs before T-08 specifically
-because T-08 revokes that token, and a revoked token 401s at the gateway
-regardless of any header spoofed alongside it -- testing T-08's own
-property, not T-13's, if the order were reversed.
+- #104 wired internal/proxy.NewHandler into cmd/usher/main.go, turning
+  T-08 and T-13's gateway-specific GAPs into real passing probes against
+  a live GET/POST /api/widgets.
+- #111 found that internal/rbac (RF-05's own scope ∩ role intersection)
+  had zero real callers anywhere despite being fully built and unit
+  tested, and wired it into the same gateway chain. T-20 gained a second
+  PASS line for it, and the shared setup's own requested scope grew
+  "widgets:read" so the token it mints can exercise the permission at
+  all -- RF-05 checks the token's own granted scope, not just what the
+  client is registered for.
 
-Only three GAPs remain, down from five:
+Every T-nn in docs/THREAT-MODEL.md still has either a passing probe or
+an explicit GAP line saying why it has none, per §6's own verification
+rule.
+
+T-13 runs before T-08 in this script's own call order: T-08 revokes the
+shared access token, and a revoked token 401s at the gateway regardless
+of any header spoofed alongside it -- testing T-08's own property, not
+T-13's, if the order were reversed.
+
+RF-05's own denial path (a role without the permission gets 403) cannot
+be shown black-box with this deployment's current seed data: both
+admin and user are granted widgets:read in cmd/usher/main.go's own role
+vocabulary, since nothing about the one demo resource gives a reason to
+restrict an ordinary user from it. The denial path has its own negative
+control in internal/proxy/proxy_test.go instead.
+
+Only three GAPs remain:
 
 - T-17 is the one gateway-specific GAP left. The route now exists, but
   this threat needs the *upstream* to fail -- a black-box HTTP probe
@@ -129,15 +146,15 @@ Only three GAPs remain, down from five:
   (see docs/security/sapper-report.txt) -- there is currently no tool in
   this project's toolbox, black-box or otherwise, that can drive this
   specific threat for real without manually breaking the stack by hand.
-- T-18 and T-19 remain GAPs by design, unaffected by #104: no HTTP
-  endpoint can answer "did the mounted keyset leak" or "did an audit
-  event reach crier" from outside, regardless of what the gateway does.
+- T-18 and T-19 remain GAPs by design, unaffected by either follow-up: no
+  HTTP endpoint can answer "did the mounted keyset leak" or "did an
+  audit event reach crier" from outside, regardless of what the gateway
+  or RBAC do.
 
 REQUIREMENTS §13's own MVP acceptance line -- "/authorize -> login ->
 consent -> code -> /token -> authenticated call through the gateway ->
-refresh -> revocation" -- was independently exercised live while
-verifying #104 itself (not by this script, which reuses a single shared
-grant rather than walking the full flow start to finish in one pass): a
-real authorization_code exchange's access token was accepted at a real
-GET /api/widgets, proxied to cmd/resource-server, before anything in
-this file was next updated.
+refresh -> revocation" -- was independently exercised live, start to
+finish, while verifying both #104 and #111: a real authorization_code
+exchange's access token, carrying widgets:read, was accepted at a real
+GET /api/widgets, proxied to cmd/resource-server, with RF-05's own
+intersection genuinely computed rather than skipped.
