@@ -1,0 +1,124 @@
+openapi: 3.0.3
+info:
+  title: usher — public surface for warden (RI-06)
+  version: "1.0"
+  description: >
+    Deliberately narrow: only the GET routes a browser or an unauthenticated
+    client can reach without usher's own multi-step login (form + CSRF +
+    consent) or a Basic-auth client credential — both of which warden's
+    single-shot JSON login model cannot drive (see
+    docs/security/warden-report.txt for why). Every route here is public by
+    design; none carries a security requirement, so warden runs with no
+    auth block and no route is silently scanned unauthenticated.
+servers:
+  - url: http://localhost:8080
+paths:
+  /healthz:
+    get:
+      operationId: healthz
+      responses:
+        "200":
+          description: process is up
+  /readyz:
+    get:
+      operationId: readyz
+      responses:
+        "200":
+          description: dependencies are reachable
+  /.well-known/openid-configuration:
+    get:
+      operationId: oidcDiscovery
+      responses:
+        "200":
+          description: OIDC discovery document
+  /.well-known/jwks.json:
+    get:
+      operationId: jwks
+      responses:
+        "200":
+          description: published signing keys
+  /authorize:
+    get:
+      operationId: authorize
+      description: >
+        redirect_uri is the open-redirect check's own target (RS-02/RS-28,
+        T-02): a registered-client exact match, validated before anything
+        else may redirect (RS-28).
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          schema: { type: string, example: code }
+        - name: client_id
+          in: query
+          required: true
+          schema: { type: string, example: demo-client }
+        - name: redirect_uri
+          in: query
+          required: true
+          schema: { type: string, example: "http://localhost:9999/callback" }
+        - name: state
+          in: query
+          schema: { type: string, example: warden-probe-state }
+        - name: scope
+          in: query
+          schema: { type: string, example: openid }
+        - name: code_challenge
+          in: query
+          required: true
+          schema: { type: string, example: "sE9Y2w3kL8bQpR5vN1xJ7hT4mC6dF0gA2iK8oU5zW9c" }
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema: { type: string, example: S256 }
+      responses:
+        "302":
+          description: to /login or /consent, or an error redirect to redirect_uri
+        "400":
+          description: client_id/redirect_uri could not be validated (RS-28)
+  /login:
+    get:
+      operationId: loginForm
+      description: >
+        login_challenge is reflected into the rendered form's own hidden
+        field (RS-36, T-21) — a real, meaningful target for xss-reflected,
+        not a parameter with nothing behind it.
+      parameters:
+        - name: login_challenge
+          in: query
+          required: true
+          schema: { type: string, example: warden-probe-challenge }
+      responses:
+        "200":
+          description: the sign-in form
+  /consent:
+    get:
+      operationId: consentForm
+      parameters:
+        - name: login_challenge
+          in: query
+          required: true
+          schema: { type: string, example: warden-probe-challenge }
+      responses:
+        "200":
+          description: the consent form
+        "400":
+          description: unknown or expired login_challenge
+  /logout:
+    get:
+      operationId: logout
+      responses:
+        "200":
+          description: clears the session regardless of whether one existed
+  /userinfo:
+    get:
+      operationId: userinfo
+      description: >
+        Deliberately left without a security requirement: marking it
+        protected would require warden's auth block, which cannot drive
+        usher's real authentication (see docs/security/warden-report.txt).
+        Included anyway so missing-headers/cors still examine its
+        anonymous 401 response.
+      responses:
+        "401":
+          description: no bearer token presented
