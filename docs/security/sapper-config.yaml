@@ -1,0 +1,16 @@
+# sapper safety config for usher (RI-06, issue #54).
+schema_version: 1
+
+target:
+  base_url: http://localhost:8080
+  tier: lab
+
+blast_radius:
+  max_concurrency: 25
+  # FR-07's own N-run aggregation (plus a discarded warm-up window) means
+  # one scenario run's own `duration` is not the whole wall-clock budget --
+  # this cap has to cover warm-up + every repeated run, not just one.
+  max_duration: 180s
+  auto_abort:
+    error_rate_over: 0.9
+    p99_over: 5s

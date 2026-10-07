@@ -1,0 +1,13 @@
+# Case 2 (sapper's own numbering): ramp concurrency against usher's
+# loginLimiter (RS-22's IP axis, burst=5, refill=1/s — the same limiter
+# namespacedKeyFunc fixed in #105) until its own 429 appears.
+name: usher-login-ramp-to-limit
+profile:
+  type: ramp-up
+  concurrency: 20
+  duration: 20s
+request:
+  method: GET
+  path: /login
+slos:
+  status_seen: 429
