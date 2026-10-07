@@ -1,0 +1,167 @@
+package main
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+)
+
+// testGatewayAudience is this file's own fixed audience string -- the
+// same role testAudience plays in internal/proxy's own test suite, kept
+// separate so a change there cannot silently change what this file
+// means by "the resource server's audience".
+const testGatewayAudience = "https://resource-server.usher.test"
+
+// newGatewayUpstream starts a test server standing in for
+// cmd/resource-server, recording the request it actually received so a
+// test can assert what internal/proxy.NewHandler forwarded -- in
+// particular, that the "/api" prefix was stripped before the upstream
+// ever saw the path (resource-server defines "/widgets", never
+// "/api/widgets"; the prefix is this gateway's own convention).
+func newGatewayUpstream(t *testing.T) (upstream *httptest.Server, received func() *http.Request) {
+	t.Helper()
+	var captured *http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Clone(r.Context())
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() *http.Request { return captured }
+}
+
+// gatewayDeps builds routerDeps with the gateway mounted against
+// upstream, and a client registered with testGatewayAudience so a real
+// /token exchange (issueRealAccessToken, userinfo_test.go) mints a
+// token this route's own audience check (RS-19) accepts.
+func gatewayDeps(t *testing.T, upstream *httptest.Server) routerDeps {
+	t.Helper()
+	client := testClient()
+	client.Audiences = []string{testGatewayAudience}
+	deps := tokenDeps(t, client)
+	deps.Denylist = newFakeDenylist()
+
+	u, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	deps.GatewayUpstream = u
+	deps.GatewayAudience = testGatewayAudience
+	return deps
+}
+
+func getGateway(path, authHeader string) *http.Request {
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "https://usher.test"+path, http.NoBody)
+	req.Host = "usher.test"
+	if authHeader != "" {
+		req.Header.Set("Authorization", authHeader)
+	}
+	return req
+}
+
+// TestGateway_GoldenPath is #104's own done-when: a token minted via the
+// real /authorize -> login -> consent -> /token flow (here, the
+// seedCode shortcut issueRealAccessToken already uses for the same
+// reason userinfo_test.go does) is accepted at a real, reachable
+// /api/** route, which forwards to the upstream with "/api" stripped
+// and the client's own bearer token carried unchanged (ADR-0007).
+func TestGateway_GoldenPath(t *testing.T) {
+	upstream, captured := newGatewayUpstream(t)
+	deps := gatewayDeps(t, upstream)
+	mux := newRouter(deps)
+	accessToken := issueRealAccessToken(t, deps, mux, []string{"openid"})
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", "Bearer "+accessToken))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/widgets = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	req := captured()
+	if req == nil {
+		t.Fatal("upstream never received a request")
+	}
+	if req.URL.Path != "/widgets" {
+		t.Errorf("upstream saw path %q, want %q (the /api prefix must be stripped before forwarding)", req.URL.Path, "/widgets")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer "+accessToken {
+		t.Errorf("upstream Authorization = %q, want the client's own bearer token forwarded unchanged (ADR-0007)", got)
+	}
+}
+
+// TestGateway_RequiresBearerToken is RS-17/RS-18's own starting point:
+// no Authorization header at all must never reach the upstream.
+func TestGateway_RequiresBearerToken(t *testing.T) {
+	upstream, captured := newGatewayUpstream(t)
+	deps := gatewayDeps(t, upstream)
+	mux := newRouter(deps)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", ""))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/widgets with no bearer token = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if captured() != nil {
+		t.Error("upstream received a request despite no bearer token -- auth must happen before proxying")
+	}
+}
+
+// TestGateway_ConsultsDenylist is RF-06/ADR-0014's own gateway-local
+// revocation check: a token on the denylist is refused here even though
+// its signature and claims are otherwise perfectly valid.
+func TestGateway_ConsultsDenylist(t *testing.T) {
+	upstream, captured := newGatewayUpstream(t)
+	deps := gatewayDeps(t, upstream)
+	mux := newRouter(deps)
+	accessToken := issueRealAccessToken(t, deps, mux, []string{"openid"})
+
+	pub := deps.Keyset.Published(deps.Now())[0].Private.Public()
+	jti := jtiOf(t, accessToken, pub)
+	fake := deps.Denylist.(*fakeDenylist)
+	if err := fake.Add(t.Context(), jti, time.Hour); err != nil {
+		t.Fatalf("Denylist.Add: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", "Bearer "+accessToken))
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /api/widgets with a denylisted token = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if captured() != nil {
+		t.Error("upstream received a request despite a denylisted token")
+	}
+}
+
+// TestGateway_NotMountedWhenUpstreamUnset is the "absent by default"
+// half: a routerDeps with no GatewayUpstream (every other test file in
+// this package builds exactly this) must not expose /api/** at all,
+// rather than mounting a handler that can never succeed.
+func TestGateway_NotMountedWhenUpstreamUnset(t *testing.T) {
+	mux := newRouter(testDeps(t))
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, getGateway("/api/widgets", ""))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /api/widgets with no gateway configured = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// TestRouteProperties_GatewayRouteIsClassified is
+// TestRouteProperties_EveryRouteIsClassified's own property, re-run
+// against a router with the gateway actually mounted -- the plain
+// testDeps(t) every other property test in router_test.go uses never
+// registers /api/**, so that test alone would never catch a gateway
+// route missing from routeGroups.
+func TestRouteProperties_GatewayRouteIsClassified(t *testing.T) {
+	upstream, _ := newGatewayUpstream(t)
+	mux := newRouter(gatewayDeps(t, upstream))
+	if uncovered := unclassifiedRoutes(t, mux); len(uncovered) > 0 {
+		t.Errorf("routes with no routeGroups entry: %v", uncovered)
+	}
+}

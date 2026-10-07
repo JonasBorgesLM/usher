@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
@@ -147,8 +148,24 @@ func run() error {
 		emitter = crierEmitter
 	}
 
+	// #104: config.Load already validated this is an absolute URL when
+	// GatewayAPIUpstream is set at all (empty means no gateway route);
+	// re-parsing here, rather than threading a *url.URL through Config
+	// itself, keeps internal/config's own Config a plain value type with
+	// no net/url-specific field, the same reasoning cfg.Issuer (a string,
+	// re-parsed where a *url.URL is actually needed) already follows.
+	var gatewayUpstream *url.URL
+	if cfg.GatewayAPIUpstream != "" {
+		gatewayUpstream, err = url.Parse(cfg.GatewayAPIUpstream)
+		if err != nil {
+			return fmt.Errorf("parse USHER_API_UPSTREAM_URL: %w", err)
+		}
+	}
+
 	deps := routerDeps{
 		Authenticator:        authenticator,
+		GatewayUpstream:      gatewayUpstream,
+		GatewayAudience:      cfg.GatewayAPIAudience,
 		Sessions:             redis.NewSessionStore(redisClient, cfg.SessionIdleTTL, cfg.SessionAbsoluteTTL),
 		Challenges:           redis.NewChallengeStore(redisClient),
 		CSRFProtector:        csrfProtector,

@@ -104,6 +104,12 @@ services:
       USHER_CSRF_SECRET: ${USHER_CSRF_SECRET:?set USHER_CSRF_SECRET in .env — see .env.example}
       USHER_CLIENTS_PATH: /etc/usher/clients.json
       USHER_KEYS_DIR: /keys
+      # #104: the one proxied /api/** route (REQUIREMENTS §7.2, ADR-0007,
+      # ADR-0013) -- resource-server's own service name on this compose
+      # network, and the audience RESOURCE_SERVER_AUDIENCE below already
+      # matches (also clients.dev.json's own "audiences").
+      USHER_API_UPSTREAM_URL: http://resource-server:8081
+      USHER_API_UPSTREAM_AUDIENCE: https://resource-server.usher.local
     volumes:
       - usher-keys:/keys:ro
       - ./clients.dev.json:/etc/usher/clients.json:ro
