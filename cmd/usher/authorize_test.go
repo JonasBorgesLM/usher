@@ -424,7 +424,9 @@ func TestAuthorize_MissingStateRejected(t *testing.T) {
 }
 
 // TestAuthorize_StateEchoedOnError is the other half of "state required
-// and echoed": the redirect carries the exact state value, unchanged. #26
+// and echoed" (RS-03: a client that checks state back is this threat's
+// own mitigation, so usher must return it unchanged for one to check).
+// The redirect carries the exact state value, unchanged. #26
 // has no success-to-client redirect yet (that is #29/#30, once a code
 // exists) -- the state this test can observe now is the one echoed back
 // on an error, since that is the only redirect-to-client path #26 builds.

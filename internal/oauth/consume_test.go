@@ -205,7 +205,7 @@ func TestConsumeCode_PKCEMismatchIsInvalidGrant(t *testing.T) {
 
 // TestConsumeCode_ReplayWithLiveTombstoneRevokesFamily is the issue's
 // second done-when: a replay within the tombstone window revokes the
-// family it produced.
+// family it produced -- RS-04's own "replay revokes" clause.
 //
 // Negative control: with the `revokeReplayedFamily` call removed from
 // ConsumeCode's failure branch (replaced with a direct `return Code{},
