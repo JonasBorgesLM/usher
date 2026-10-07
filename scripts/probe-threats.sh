@@ -34,12 +34,15 @@
 #
 # T-08, T-13 and T-17 describe the *gateway's* own behavior specifically
 # (REQUIREMENTS §13's "authenticated call through the gateway" step).
-# internal/proxy.NewHandler is built and unit-tested (#40-#42) but never
-# wired into cmd/usher/main.go -- there is no live /api/** route to probe
-# against yet (found while writing this script; tracked as #104). T-08 and
-# T-13 each still have a real, probeable half below (the resource server's
-# own independent defense, RS-18/RI-04); T-17 has none, since it is
-# entirely about the gateway's own ErrorHandler and breaker.
+# internal/proxy.NewHandler was built and unit-tested (#40-#42) but, when
+# this script first wrote these probes, was never wired into
+# cmd/usher/main.go -- there was no live /api/** route to probe against.
+# #104 (filed from that finding) wired it in; T-08 and T-13 below now
+# probe the real /api/** route directly, alongside the resource server's
+# own independent defense (RS-18/RI-04) each already had. T-17 is still a
+# GAP: it needs the upstream to actually fail, which a black-box HTTP
+# probe cannot induce without stopping or breaking the compose stack's
+# own resource-server container -- see probe_t17's own comment.
 
 set -uo pipefail
 
@@ -384,13 +387,28 @@ probe_t07() {
 # --- T-08: stolen access token --------------------------------------------
 probe_t08() {
   header "T-08 -- stolen access token (RF-06, RF-12, RS-24, RS-26)"
-  local revoke_status rs_status introspect_resp
+  local gw_status_before revoke_status rs_status introspect_resp gw_status_after
+
+  gw_status_before=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")
+  if [ "$gw_status_before" = "200" ]; then
+    pass "the gateway's own /api/** route (#104) accepts a valid, not-yet-revoked access token"
+  else
+    fail "the gateway rejected a valid access token before revocation (${gw_status_before}), expected 200"
+  fi
+
   revoke_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/revoke" -u "${CLIENT_ID}:${CLIENT_SECRET}" \
     --data-urlencode "token=${ACCESS_TOKEN}")
   if [ "$revoke_status" = "200" ]; then
     pass "/revoke accepts the access token (200)"
   else
     fail "/revoke returned ${revoke_status}, expected 200"
+  fi
+
+  gw_status_after=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")
+  if [ "$gw_status_after" = "401" ]; then
+    pass "the gateway's OWN denylist enforcement (RF-06) now refuses the revoked token -- the mitigation this threat names, probed for real now that #104 wired /api/** in"
+  else
+    fail "the gateway still accepted the revoked token (${gw_status_after}), expected 401 -- RF-06's denylist enforcement is not engaging"
   fi
 
   rs_status=$(curl -s -o /dev/null -w '%{http_code}' "${RS_BASE}/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")
@@ -406,14 +424,15 @@ probe_t08() {
   else
     fail "/introspect reported the revoked access token as inactive, inconsistent with ADR-0014: $introspect_resp"
   fi
-
-  gap "the gateway's OWN denylist enforcement (RF-06) cannot be probed: internal/proxy.NewHandler is never wired into cmd/usher/main.go, so there is no live /api/** route to send a revoked token through -- see #104"
 }
 
 # --- T-13: identity header spoofing ---------------------------------------
+# Runs before T-08: T-08 revokes ACCESS_TOKEN, and the gateway half below
+# needs it still valid -- a revoked token 401s at the gateway regardless
+# of any header, which would test T-08's own property, not this one.
 probe_t13() {
   header "T-13 -- identity header spoofing (RS-17, RS-18, RI-04)"
-  local real_subject spoofed_subject
+  local real_subject spoofed_subject gw_real_subject gw_spoofed_subject
   real_subject=$(jf "$(curl -s "${RS_BASE}/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")" subject)
   spoofed_subject=$(jf "$(curl -s "${RS_BASE}/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "X-Auth-Subject: attacker-controlled-identity")" subject)
   if [ -n "$real_subject" ] && [ "$real_subject" = "$spoofed_subject" ]; then
@@ -421,7 +440,15 @@ probe_t13() {
   else
     fail "a spoofed X-Auth-Subject header changed the resource server's reported subject: real='${real_subject}' spoofed='${spoofed_subject}'"
   fi
-  gap "the gateway's OWN header-stripping (RS-17, allow-list before inject) cannot be probed: no live /api/** route exists yet -- see #104"
+
+  gw_real_subject=$(jf "$(curl -s "${BASE}/api/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}")" subject)
+  gw_spoofed_subject=$(jf "$(curl -s "${BASE}/api/widgets" -H "Authorization: Bearer ${ACCESS_TOKEN}" -H "X-Auth-Subject: attacker-controlled-identity")" subject)
+  if [ -n "$gw_real_subject" ] && [ "$gw_real_subject" = "$gw_spoofed_subject" ]; then
+    pass "through the real gateway (#104), a spoofed X-Auth-Subject still has no effect on the reported subject -- RS-17's strip-before-inject and RS-18's independent defense both hold in the combined pipeline"
+  else
+    fail "a spoofed X-Auth-Subject header changed the subject reported through the gateway: real='${gw_real_subject}' spoofed='${gw_spoofed_subject}'"
+  fi
+  note "this cannot isolate the gateway's own stripping from the resource server's own independent ignoring of X-Auth-* -- RS-18's defense-in-depth makes the two indistinguishable from outside, by design"
 }
 
 # --- T-10: user enumeration -------------------------------------------------
@@ -536,7 +563,7 @@ probe_t14() {
 # --- T-17/T-18/T-19: not probeable from outside, by design or by #104 ----------
 probe_t17() {
   header "T-17 -- upstream failure cascading into the gateway, or leaking through it (RS-20, RS-21, RI-02)"
-  gap "entirely about the gateway's own ErrorHandler and bastion breaker; no live /api/** route exists to drive an upstream failure through it -- see #104"
+  gap "#104 wired the gateway's own /api/** route in, but this threat needs the upstream to actually fail -- a black-box HTTP probe cannot induce that without stopping or breaking the compose stack's own resource-server container, which is a different, more invasive kind of probe than this script runs. sapper's own fault injector (found while working #54) has no CLI-driven scenario yet either -- see #54's own report for the exact citation."
 }
 
 probe_t18() {
@@ -680,8 +707,10 @@ probe_t07
 # REFRESH_TOKEN from that same grant -- found the hard way, by watching
 # T-20 and T-07 fail with invalid_grant when T-01 ran first.
 probe_t01
-probe_t08
+# T-13 before T-08: T-08 revokes ACCESS_TOKEN, and T-13's own gateway
+# half needs it still valid (see probe_t13's own comment).
 probe_t13
+probe_t08
 sleep 5
 probe_t10
 probe_t11
