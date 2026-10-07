@@ -11,6 +11,8 @@ import (
 // depend on the specific cost, only on the encode/decode/compare logic.
 var weakParams = Params{Memory: 8 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32}
 
+// TestHashPassword_VerifyPassword_RoundTrip is RS-13's own encoding: a
+// versioned, salted argon2id PHC string, not a bare digest.
 func TestHashPassword_VerifyPassword_RoundTrip(t *testing.T) {
 	encoded, err := HashPassword("correct horse battery staple", weakParams)
 	if err != nil {
