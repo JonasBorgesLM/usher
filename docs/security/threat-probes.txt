@@ -1,10 +1,10 @@
-threat probes — 2026-10-06, local development machine
+threat probes — 2026-10-07, local development machine (updated after #104)
 
 $ docker compose up -d
 $ go run ./cmd/seed
 $ ./scripts/probe-threats.sh | tee docs/security/threat-probes.txt
 
-usher threat probes -- 2026-10-06T23:14:18Z
+usher threat probes -- 2026-10-07T00:40:05Z
 against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resource server)
 
 === shared setup: one real authorization_code exchange ===
@@ -42,15 +42,17 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
   PASS  replaying the shared setup's own already-consumed code returns invalid_grant, no second token issued
   NOTE  a replay after the tombstone expires or Redis loses it is an ordinary invalid_grant too -- only the *detection* is bounded, the code stays unusable either way (T-01's residual)
 
-=== T-08 -- stolen access token (RF-06, RF-12, RS-24, RS-26) ===
-  PASS  /revoke accepts the access token (200)
-  PASS  the resource server reached DIRECTLY still accepts the revoked token -- the stated residual (ADR-0014): a direct call never consults the denylist, TTL is the only bound
-  PASS  /introspect still reports active:true for the revoked access token -- introspection is purely cryptographic/claims-based and never consults the gateway's denylist either, consistent with ADR-0014 and not a separate bug
-  GAP   the gateway's OWN denylist enforcement (RF-06) cannot be probed: internal/proxy.NewHandler is never wired into cmd/usher/main.go, so there is no live /api/** route to send a revoked token through -- see #104
-
 === T-13 -- identity header spoofing (RS-17, RS-18, RI-04) ===
   PASS  the resource server ignores a spoofed X-Auth-Subject header and reports the real token's own subject (RS-18/RI-04's independent defense)
-  GAP   the gateway's OWN header-stripping (RS-17, allow-list before inject) cannot be probed: no live /api/** route exists yet -- see #104
+  PASS  through the real gateway (#104), a spoofed X-Auth-Subject still has no effect on the reported subject -- RS-17's strip-before-inject and RS-18's independent defense both hold in the combined pipeline
+  NOTE  this cannot isolate the gateway's own stripping from the resource server's own independent ignoring of X-Auth-* -- RS-18's defense-in-depth makes the two indistinguishable from outside, by design
+
+=== T-08 -- stolen access token (RF-06, RF-12, RS-24, RS-26) ===
+  PASS  the gateway's own /api/** route (#104) accepts a valid, not-yet-revoked access token
+  PASS  /revoke accepts the access token (200)
+  PASS  the gateway's OWN denylist enforcement (RF-06) now refuses the revoked token -- the mitigation this threat names, probed for real now that #104 wired /api/** in
+  PASS  the resource server reached DIRECTLY still accepts the revoked token -- the stated residual (ADR-0014): a direct call never consults the denylist, TTL is the only bound
+  PASS  /introspect still reports active:true for the revoked access token -- introspection is purely cryptographic/claims-based and never consults the gateway's denylist either, consistent with ADR-0014 and not a separate bug
 
 === T-10 -- user enumeration (RS-14, RS-25, RS-33) ===
   PASS  existing-user-wrong-password and non-existent-identifier return the identical status (200)
@@ -69,7 +71,7 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
   PASS  a failed grant's error body carries no internal detail -- RFC 6749 §5.2's fixed codes (RS-25)
 
 === T-17 -- upstream failure cascading into the gateway, or leaking through it (RS-20, RS-21, RI-02) ===
-  GAP   entirely about the gateway's own ErrorHandler and bastion breaker; no live /api/** route exists to drive an upstream failure through it -- see #104
+  GAP   #104 wired the gateway's own /api/** route in, but this threat needs the upstream to actually fail -- a black-box HTTP probe cannot induce that without stopping or breaking the compose stack's own resource-server container, which is a different, more invasive kind of probe than this script runs. sapper's own fault injector (found while working #54) has no CLI-driven scenario yet either -- see #54's own report for the exact citation.
 
 === T-18 -- signing key compromise ===
   GAP   not probeable from outside by design: no endpoint can reveal whether the mounted keyset stayed confined to its mount. Custody and rotation are process controls (ADR-0015), verified by review, not an HTTP probe.
@@ -95,59 +97,47 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
   NOTE  the eviction check (RNF-07) is a startup snapshot and, in cluster mode, sees only the masters reachable then (T-16's residual)
 
 === summary ===
-  PASS=26  FAIL=0  GAP=5
+  PASS=29  FAIL=0  GAP=3
 
 ---
 
-Reading this run: every T-nn in docs/THREAT-MODEL.md has either a passing
-probe or an explicit GAP line saying why it has none, per §6's own
-verification rule. All 21 threats are accounted for; nothing is silent.
+Reading this run: this is #52's own report, regenerated after #104 wired
+internal/proxy.NewHandler into cmd/usher/main.go. Every T-nn in
+docs/THREAT-MODEL.md still has either a passing probe or an explicit GAP
+line saying why it has none, per §6's own verification rule.
 
-Five GAPs, in two different categories:
+What changed from the first run (preserved in git history, see this
+file's own commit log): T-08 and T-13 each gained a second PASS line --
+the gateway's own denylist enforcement (RF-06) and the gateway's own
+header handling (RS-17), both now probed through a real, live
+GET/POST /api/widgets, not just inferred from the resource server's own
+independent defense. The access token minted in the shared setup above
+is the same one both probes reuse; T-13 now runs before T-08 specifically
+because T-08 revokes that token, and a revoked token 401s at the gateway
+regardless of any header spoofed alongside it -- testing T-08's own
+property, not T-13's, if the order were reversed.
 
-- T-08 and T-13 each have a real, passing probe for their non-gateway half
-  (the resource server's own independent defense, RS-18/RI-04) plus a GAP
-  for their gateway half. T-17 is entirely about the gateway. All three GAPs
-  share one root cause: internal/proxy.NewHandler is built and unit-tested
-  (#40-#42) but was never wired into cmd/usher/main.go when this script was
-  written, so there is no live /api/** route to send a request through.
-  Filed as #104; closing it turns these three GAPs into probes, not a
-  rewrite of this script.
-- T-18 and T-19 are GAPs by design, not by gap in coverage: no HTTP
-  endpoint can answer "did the mounted keyset leak" or "did an audit event
-  reach crier" from outside, so no probe for either will ever exist here.
-  §6 calls this out explicitly rather than asking for one.
+Only three GAPs remain, down from five:
 
-Two bugs were found and fixed while building this script, not by it:
+- T-17 is the one gateway-specific GAP left. The route now exists, but
+  this threat needs the *upstream* to fail -- a black-box HTTP probe
+  cannot induce that without stopping or breaking the compose stack's
+  own resource-server container, which is a different, more invasive
+  kind of probe than anything else in this script does. Investigating
+  this while working #54 turned up the same gap one level up: sapper's
+  own fault injector exists but has no CLI-driven scenario yet either
+  (see docs/security/sapper-report.txt) -- there is currently no tool in
+  this project's toolbox, black-box or otherwise, that can drive this
+  specific threat for real without manually breaking the stack by hand.
+- T-18 and T-19 remain GAPs by design, unaffected by #104: no HTTP
+  endpoint can answer "did the mounted keyset leak" or "did an audit
+  event reach crier" from outside, regardless of what the gateway does.
 
-- cmd/usher/main.go's loginLimiter and authorizeLimiter shared one Redis
-  key function (the client's bare IP) despite being configured with
-  different (burst, perSecond) tiers -- moat/ratelimit.Store.TakeN keys
-  purely by that string, so the two limiters collided on one bucket.
-  Confirmed live: six requests to /consent alone drove /authorize's own
-  reported Remaining from 19 to 0. Fixed with namespacedKeyFunc
-  (cmd/usher/main.go), regression-tested in cmd/usher/main_test.go with a
-  negative control seen failing before the fix.
-- scripts/timing-login's own sibling, check-readme-examples.sh, is
-  unrelated; the bug here was in this script's own early draft, not in
-  product code: an &#43; entity in a CSP nonce's HTML attribute (html/
-  template correctly escaping a base64 '+') was compared byte-for-byte
-  against the un-escaped CSP header value. Fixed by decoding that one
-  entity before comparing, in probe_t21.
-
-T-01's own probe (replaying an already-consumed code) revokes the whole
-refresh-token family that code minted -- RS-04's own "replay revokes"
-mitigation, working as intended, not a bug. It runs after T-07 and T-20 in
-this script's own call order for exactly that reason: both still needed
-REFRESH_TOKEN from the same shared grant.
-
-loginLimiter's burst (5) and refill rate (1/s) are tight by design (RS-22).
-A few probes drive dedicated login/consent flows of their own on top of the
-shared setup's, so this script paces itself with short sleeps before them
-rather than racing a limiter that is correctly strict -- the same thing a
-well-behaved real client would have to do.
-
-A re-run without clearing anything by hand passes the same way: the shared
-setup's own authorize_login_consent helper treats "session already
-authenticated" and "consent already granted" as 303s to follow, not errors,
-so this script tolerates being run against a stack it already drove once.
+REQUIREMENTS §13's own MVP acceptance line -- "/authorize -> login ->
+consent -> code -> /token -> authenticated call through the gateway ->
+refresh -> revocation" -- was independently exercised live while
+verifying #104 itself (not by this script, which reuses a single shared
+grant rather than walking the full flow start to finish in one pass): a
+real authorization_code exchange's access token was accepted at a real
+GET /api/widgets, proxied to cmd/resource-server, before anything in
+this file was next updated.
