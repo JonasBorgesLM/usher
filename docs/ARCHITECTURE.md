@@ -1092,3 +1092,68 @@ looks like differs.
    `/token`'s `invalid_grant` and `/revoke`'s always-200 already apply).
 6. Respond with `Cache-Control: no-store` (RS-26) — the same `tokenGroup`
    `/token` and `/revoke` already carry; no new route group.
+
+## 21. Flow 9 — `GET`/`POST /api/**` (the gateway, ADR-0007, ADR-0013, #104)
+
+`internal/proxy.NewHandler` was built and unit-tested in #40–#42, but
+`cmd/usher/main.go` never instantiated it — there was no live `/api/**`
+route in the real binary until #104. Mounted conditionally
+(`GatewayUpstream != nil`, the same "absent by default" shape `Emitter`
+already has): a deployment with nothing to proxy to — this repository's
+own test suite included — gets a router with no gateway at all, rather
+than one guaranteed to fail every request.
+
+1. `chi.Mux.Mount("/api", ...)` wraps `proxy.NewHandler`'s result in
+   `http.StripPrefix("/api", ...)`: the one upstream wired for the MVP,
+   `cmd/resource-server`, defines `/widgets`, never `/api/widgets` — the
+   prefix is this gateway's own convention, not the upstream's concern.
+   `NewHandler` itself only rewrites `Scheme`/`Host`; it never touches
+   the path, so whoever mounts it decides this, not `internal/proxy`.
+2. Strip every inbound `X-Auth-*` header (RS-17) before anything else
+   reads the request.
+3. Extract the bearer token; missing → 401, same body (none) as every
+   other failure mode below (RS-23/RS-25's "no internal detail" applied
+   here too — a caller cannot distinguish "missing" from "invalid" from
+   "revoked" by response shape).
+4. Validate it with the same `bearerValidator` `/revoke`, `/introspect`
+   and `/userinfo` already share (Flow 4, Flow 5, Flow 8) — same
+   algorithm allow-list (RS-06), same issuer, same clock — against
+   *this route's own* `Audience` (RS-19: a token minted for one resource
+   server is refused at another's route, never silently accepted
+   because some route's check was skipped). Fails → 401.
+5. Consult the gateway-local denylist (RF-06, ADR-0014) by the token's
+   `jti` — the same store `/revoke` writes to (`routerDeps.Denylist`,
+   constructed once, read here and written there). A denylist error
+   collapses to "revoked" (RNF-04: infrastructure failure denies), never
+   to "allowed." Found or errored → 401.
+6. Inject `X-Auth-Subject`, `X-Auth-Client`, `X-Auth-Scope` (RI-04) —
+   only after every check above passed, and only these three headers in
+   that namespace ever get set, since step 2 already guaranteed nothing
+   else under it survived from the client.
+7. Forward the original `Authorization` header unchanged (ADR-0007): the
+   resource server re-validates the same token itself, with its own
+   audience and its own JWKS fetch (RS-18) — it never trusts step 6's
+   headers for an authorization decision (`RI-04`'s own contract, which
+   this gateway cannot enforce on a consumer reached outside it).
+8. The round trip to the upstream runs through one named `bastion.Breaker`
+   (ADR-0016, RI-02) and RS-21's explicit timeouts
+   (`newUpstreamTransport`). A breaker rejection (`ErrOpenState`,
+   `ErrTooManyRequests`) answers `503` + `Retry-After`, never the bare
+   `502` a genuine dial/timeout failure gets (RS-20) — "the circuit is
+   open" and "the upstream is down" are different facts, and a caller
+   retrying immediately against a `502` would be doing exactly what the
+   breaker exists to stop. Neither response leaks the upstream's own
+   host, port or a stack trace.
+9. The upstream's response body is capped at 10 MiB before any of it
+   reaches the client (RS-21) — a misbehaving or malicious upstream
+   streaming indefinitely cannot exhaust the gateway's own memory.
+
+**Not built here:** the `[rbac]` half of REQUIREMENTS §7.2's `/api/**`
+row. `internal/rbac.RequirePermission` already exists for whenever that
+phase picks this chain up (§15's own comment on `WithScope`/`WithRole`
+still holds: "M6, not yet built" refers to this specific chain — #104's
+own scope was making the route exist and reachable, not RBAC, and
+deliberately did not expand to cover it). The per-token/per-account rate
+limit the same table row names is left unwired for the same "defer, do
+not invent a weighting scheme no RS-/RF- id asks for yet" reason
+`tokenGroup` already gives for `/token`.

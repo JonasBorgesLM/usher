@@ -105,6 +105,24 @@ var userinfoGroup = routeGroup{name: "userinfo", csrf: false, noStore: true}
 // routes in this table.
 var jwksGroup = routeGroup{name: "jwks", csrf: false, noStore: false}
 
+// gatewayGroup is REQUIREMENTS §7.2's "/api/**" row: no CSRF (bearer auth,
+// not a cookie a double-submit model applies to), and no-store is
+// "upstream's choice" — the gateway must not force a Cache-Control the
+// proxied response did not itself carry, so this group leaves noStore
+// false the same way jwksGroup does for its own, different reason.
+// Bearer authentication, the per-route audience check (RS-19) and the
+// gateway-local denylist (RF-06) are internal/proxy.NewHandler's own job,
+// not a middleware layer here — the same choice tokenGroup's and
+// userinfoGroup's comments already explain for client auth and bearer
+// auth respectively. The table's own rbac column and its "per
+// token/account" rate limit are deliberately not wired: #104's own scope
+// is making the route exist and reachable, not RBAC (REQUIREMENTS §11,
+// internal/rbac.RequirePermission is already built for whenever that
+// phase picks this group up) or a rate-limit weighting scheme no RS-/RF-
+// id here asks for yet — the same "defer, do not invent" reasoning
+// tokenGroup's own comment gives.
+var gatewayGroup = routeGroup{name: "gateway", csrf: false, noStore: false}
+
 // wrap composes h under g's chain, around limiter's IP axis and protector's
 // CSRF check — ratelimit, then validate.MaxBodyBytes, then csrf if the group
 // carries it, then no-store if the group carries it, innermost to outermost

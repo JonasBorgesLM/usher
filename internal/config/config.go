@@ -108,6 +108,16 @@ type Config struct {
 	CrierURL         string
 	CrierServiceName string
 	CrierToken       secret.Value
+
+	// GatewayAPIUpstream and GatewayAPIAudience configure the one proxied
+	// route REQUIREMENTS §7.2 calls `/api/**` (ADR-0007, ADR-0013): where
+	// requests are forwarded, and the audience pkg/tokenvalidator checks
+	// a bearer token against before they are. GatewayAPIUpstream == ""
+	// means no gateway route is mounted at all — this repository's own
+	// test suite builds a Config with neither set, the same "optional
+	// subsystem, absent by default" shape CrierURL already has.
+	GatewayAPIUpstream string
+	GatewayAPIAudience string
 }
 
 // lifetimeBound names one RF-12 lifetime: the environment variable that
@@ -318,6 +328,26 @@ func Load(getenv Getenv) (Config, error) {
 			return Config{}, fmt.Errorf("config: USHER_CRIER_URL is set but USHER_CRIER_TOKEN was not")
 		}
 		cfg.CrierToken = secret.New([]byte(tokenRaw))
+	}
+
+	// The gateway's one proxied route is optional the same way crier is:
+	// absent by default, and its own second field becomes required the
+	// moment the first is set, rather than silently proxying with no
+	// audience check (RS-19) or being guessed from the upstream URL.
+	if gatewayUpstream, gatewayUpstreamSet := getenv("USHER_API_UPSTREAM_URL"); gatewayUpstreamSet {
+		cfg.GatewayAPIUpstream = gatewayUpstream
+	}
+	if cfg.GatewayAPIUpstream != "" {
+		upstreamURL, parseErr := url.Parse(cfg.GatewayAPIUpstream)
+		if parseErr != nil || !upstreamURL.IsAbs() {
+			return Config{}, fmt.Errorf("config: USHER_API_UPSTREAM_URL=%q is not an absolute URL", cfg.GatewayAPIUpstream)
+		}
+
+		audience, audienceSet := getenv("USHER_API_UPSTREAM_AUDIENCE")
+		if !audienceSet || audience == "" {
+			return Config{}, fmt.Errorf("config: USHER_API_UPSTREAM_URL is set but USHER_API_UPSTREAM_AUDIENCE was not")
+		}
+		cfg.GatewayAPIAudience = audience
 	}
 
 	return cfg, nil

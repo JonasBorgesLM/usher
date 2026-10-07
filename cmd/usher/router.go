@@ -3,14 +3,11 @@
 // a router that imports both internal/oauth and internal/proxy belongs here
 // rather than under either — the one place both are allowed to meet.
 //
-// Only "/login" is registered in M1: it is the one REQUIREMENTS §7.2 route
-// group this phase can serve for real (the identity/session pieces #12-#20
-// built). The other five groups' handlers do not exist until their own
-// phase (REQUIREMENTS §11) — registering a stub for them now would invent
-// auth/rbac middleware ahead of the design that is supposed to produce it.
-// newRouter and routeGroup.wrap (chain.go) are the reusable infrastructure
-// those phases register through; growing the router is adding a line to
-// newRouter and an entry to routeGroups, not building a new mechanism.
+// Every REQUIREMENTS §7.2 route group is registered here now, the last
+// being /api/** (#104). newRouter and routeGroup.wrap (chain.go) are the
+// reusable infrastructure each phase registered through as it landed;
+// growing the router further is adding a line to newRouter and an entry
+// to routeGroups, not building a new mechanism.
 package main
 
 import (
@@ -18,11 +15,13 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/JonasBorgesLM/bastion"
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
 	"github.com/JonasBorgesLM/moat/secureheaders"
@@ -91,6 +90,16 @@ type routerDeps struct {
 	// deferred alongside the gateway itself.
 	Denylist proxy.Denylist
 
+	// GatewayUpstream and GatewayAudience are REQUIREMENTS §7.2's
+	// "/api/**" row (#104): where the one proxied route forwards to, and
+	// the audience pkg/tokenvalidator checks a bearer token against
+	// before it does (RS-19). GatewayUpstream == nil means no gateway
+	// route is mounted at all -- this repository's own test suite
+	// leaves both unset, the same "absent by default" shape Emitter
+	// already has.
+	GatewayUpstream *url.URL
+	GatewayAudience string
+
 	// ConsumerJWKSCacheTTL is /.well-known/jwks.json's own Cache-Control
 	// max-age (#33) -- the same duration RS-09's retirement formula was
 	// already built against (keys.Load's own consumerJWKSCacheTTL
@@ -123,6 +132,7 @@ var routeGroups = map[string]routeGroup{
 	"/userinfo":                         userinfoGroup,
 	"/.well-known/jwks.json":            jwksGroup,
 	"/.well-known/openid-configuration": jwksGroup,
+	"/api/*":                            gatewayGroup, // #104; chi.Walk's own pattern for Mount("/api", ...)
 }
 
 func newRouter(deps routerDeps) *chi.Mux {
@@ -321,6 +331,33 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	r.Method(http.MethodGet, "/.well-known/openid-configuration",
 		jwksGroup.wrap(nil, nil, discovery))
+
+	// #104: the one proxied route REQUIREMENTS §7.2 calls /api/**.
+	// Mounted only when GatewayUpstream is set -- this repository's own
+	// test suite, and any future deployment with nothing to proxy to,
+	// get a router with no gateway at all, the same "absent by default"
+	// shape Emitter already has. http.StripPrefix hands
+	// proxy.NewHandler the upstream's own path shape (resource-server
+	// defines "/widgets", never "/api/widgets" -- the prefix is this
+	// gateway's own convention, not the upstream's concern).
+	if deps.GatewayUpstream != nil {
+		breaker, err := bastion.New("resource-server")
+		if err != nil {
+			panic("router: build the gateway's bastion.Breaker: " + err.Error())
+		}
+		gatewayHandler := proxy.NewHandler(
+			proxy.Route{
+				PathPrefix: "/api",
+				Upstream:   deps.GatewayUpstream,
+				Audience:   deps.GatewayAudience,
+				Breaker:    breaker,
+			},
+			bearerValidator,
+			deps.Denylist,
+			deps.Logger,
+		)
+		r.Mount("/api", gatewayGroup.wrap(nil, nil, http.StripPrefix("/api", gatewayHandler)))
+	}
 
 	return r
 }

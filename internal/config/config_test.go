@@ -302,6 +302,59 @@ func TestLoad_CrierUnsetByDefault(t *testing.T) {
 	}
 }
 
+// TestLoad_GatewayAudienceRequiredWhenUpstreamSet is RS-19 applied at
+// startup, the same shape TestLoad_CrierTokenRequiredWhenCrierURLSet
+// already proves for crier: a gateway upstream with no audience fails
+// closed rather than silently proxying with the audience check skipped.
+//
+// Negative control: with the `cfg.GatewayAPIAudience` requiredness check
+// removed from Load's `if cfg.GatewayAPIUpstream != ""` branch, this test
+// failed -- Load succeeded with USHER_API_UPSTREAM_URL set and no
+// USHER_API_UPSTREAM_AUDIENCE. Verified by hand, restored before
+// committing.
+func TestLoad_GatewayAudienceRequiredWhenUpstreamSet(t *testing.T) {
+	env := validEnv()
+	env["USHER_API_UPSTREAM_URL"] = "http://resource-server:8081"
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with USHER_API_UPSTREAM_URL set but no USHER_API_UPSTREAM_AUDIENCE; want an error")
+	}
+}
+
+func TestLoad_GatewayUpstreamMustBeAbsoluteURL(t *testing.T) {
+	env := validEnv()
+	env["USHER_API_UPSTREAM_URL"] = "not-a-url"
+	env["USHER_API_UPSTREAM_AUDIENCE"] = "https://resource-server.usher.local"
+	if _, err := Load(mapGetenv(env)); err == nil {
+		t.Fatal("Load succeeded with USHER_API_UPSTREAM_URL=\"not-a-url\"; want an error")
+	}
+}
+
+func TestLoad_GatewayUnsetByDefault(t *testing.T) {
+	cfg, err := Load(mapGetenv(validEnv()))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GatewayAPIUpstream != "" || cfg.GatewayAPIAudience != "" {
+		t.Errorf("GatewayAPIUpstream = %q, GatewayAPIAudience = %q, want both empty when unset", cfg.GatewayAPIUpstream, cfg.GatewayAPIAudience)
+	}
+}
+
+func TestLoad_GatewaySetTogether(t *testing.T) {
+	env := validEnv()
+	env["USHER_API_UPSTREAM_URL"] = "http://resource-server:8081"
+	env["USHER_API_UPSTREAM_AUDIENCE"] = "https://resource-server.usher.local"
+	cfg, err := Load(mapGetenv(env))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.GatewayAPIUpstream != "http://resource-server:8081" {
+		t.Errorf("GatewayAPIUpstream = %q, want %q", cfg.GatewayAPIUpstream, "http://resource-server:8081")
+	}
+	if cfg.GatewayAPIAudience != "https://resource-server.usher.local" {
+		t.Errorf("GatewayAPIAudience = %q, want %q", cfg.GatewayAPIAudience, "https://resource-server.usher.local")
+	}
+}
+
 // lifetimeValue reads the Config field lb identifies, by its environment
 // variable name -- lb.assign is a setter with no matching getter, so this is
 // the read-side counterpart the tests above need.
