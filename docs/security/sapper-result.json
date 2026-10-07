@@ -1,0 +1,238 @@
+{
+  "target": {
+    "base_url": "http://localhost:8080",
+    "tier": "lab",
+    "caps": {
+      "max_concurrency": 25,
+      "max_duration": 180000000000
+    }
+  },
+  "scenario": "usher-login-ramp-to-limit",
+  "profile": "ramp-up",
+  "started_at": "2026-10-06T21:06:12.614533-03:00",
+  "completed_at": "2026-10-06T21:07:12.656504-03:00",
+  "aborted": false,
+  "metrics": {
+    "runs": 3,
+    "status_counts": {
+      "200": 66,
+      "429": 247968
+    },
+    "p50": {
+      "mean": 1449444,
+      "min": 998583,
+      "max": 2271959,
+      "stddev": 582503
+    },
+    "p90": {
+      "mean": 7412388,
+      "min": 2106208,
+      "max": 17951333,
+      "stddev": 7452219
+    },
+    "p99": {
+      "mean": 33172180,
+      "min": 27436500,
+      "max": 39815500,
+      "stddev": 5094295
+    },
+    "error_rate": {
+      "mean": 0.03735739570353818,
+      "min": 0.00211891677805832,
+      "max": 0.10751152759184887,
+      "stddev": 0.04960663745845851
+    }
+  },
+  "verdict": {
+    "passed": true,
+    "results": [
+      {
+        "name": "status_seen",
+        "passed": true,
+        "detail": "status 429 observed 247968 times across 3 runs (want ≥ 1 — e.g. the rate limiter's 429)"
+      }
+    ]
+  },
+  "timeline": [
+    {
+      "start": 0,
+      "total": 2207,
+      "errors": 0,
+      "status_counts": {
+        "200": 5,
+        "429": 2202
+      }
+    },
+    {
+      "start": 1000000000,
+      "total": 3664,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 3663
+      }
+    },
+    {
+      "start": 2000000000,
+      "total": 4759,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 4758
+      }
+    },
+    {
+      "start": 3000000000,
+      "total": 5629,
+      "errors": 0,
+      "status_counts": {
+        "200": 2,
+        "429": 5627
+      }
+    },
+    {
+      "start": 4000000000,
+      "total": 6298,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 6297
+      }
+    },
+    {
+      "start": 5000000000,
+      "total": 6907,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 6906
+      }
+    },
+    {
+      "start": 6000000000,
+      "total": 6994,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 6993
+      }
+    },
+    {
+      "start": 7000000000,
+      "total": 7577,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 7576
+      }
+    },
+    {
+      "start": 8000000000,
+      "total": 7822,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 7821
+      }
+    },
+    {
+      "start": 9000000000,
+      "total": 7777,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 7776
+      }
+    },
+    {
+      "start": 10000000000,
+      "total": 8234,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 8233
+      }
+    },
+    {
+      "start": 11000000000,
+      "total": 8297,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 8296
+      }
+    },
+    {
+      "start": 12000000000,
+      "total": 8779,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 8778
+      }
+    },
+    {
+      "start": 13000000000,
+      "total": 8657,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 8656
+      }
+    },
+    {
+      "start": 14000000000,
+      "total": 8763,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 8762
+      }
+    },
+    {
+      "start": 15000000000,
+      "total": 9188,
+      "errors": 0,
+      "status_counts": {
+        "200": 1,
+        "429": 9187
+      }
+    },
+    {
+      "start": 16000000000,
+      "total": 3994,
+      "errors": 24,
+      "status_counts": {
+        "200": 1,
+        "429": 3969
+      }
+    },
+    {
+      "start": 17000000000,
+      "total": 656,
+      "errors": 47,
+      "status_counts": {
+        "200": 1,
+        "429": 608
+      }
+    },
+    {
+      "start": 18000000000,
+      "total": 682,
+      "errors": 109,
+      "status_counts": {
+        "200": 1,
+        "429": 572
+      }
+    },
+    {
+      "start": 19000000000,
+      "total": 655,
+      "errors": 107,
+      "status_counts": {
+        "200": 1,
+        "429": 547
+      }
+    }
+  ]
+}

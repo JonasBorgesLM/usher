@@ -1,0 +1,66 @@
+sapper run — 2026-10-06, local development machine (RI-06, issue #54)
+
+$ docker compose up -d
+$ cd ../sapper && go build -o sapper ./cmd/sapper
+$ ./sapper run    --config usher/docs/security/sapper-config.yaml \
+                   --scenario usher/docs/security/sapper-ramp-up-login.yaml \
+                   --out sapper-result.json
+$ ./sapper assert --in sapper-result.json
+$ ./sapper report --in sapper-result.json --out sapper-report.html
+
+run "usher-login-ramp-to-limit" (ramp-up) → sapper-result.json
+  p99 mean 33.17218ms (±5.094295ms over 3 runs), error rate 0.0374
+  429 first seen at ~2207 req/s (1s into the run) — the rate limiter's knee
+  verdict: PASS
+
+$ sapper assert --in sapper-result.json
+  [ok] status_seen: status 429 observed 247968 times across 3 runs (want >= 1 — e.g. the rate limiter's 429)
+all SLOs passed
+
+Full metrics, per-second timeline and verdict: docs/security/sapper-result.json
+(committed alongside this file).
+
+---
+
+Reading this run: ramp-up targeted GET /login — usher's loginLimiter
+(RS-22's IP axis, burst=5, refill=1/s), the same limiter namespacedKeyFunc
+fixed in #105. Across 3 aggregated runs (warm-up discarded, FR-07) at up to
+20 concurrent clients for 20s each, only 66 requests got a 200; 247968 got
+429. The knee appears inside the first second of load and holds for the
+whole run — nothing leaks past the ceiling under real concurrency, which is
+exactly RF-07/RS-22's own claim and T-15's own mitigation, now verified
+under load rather than just by the single-request probes in
+scripts/probe-threats.sh. It also re-validates #105's fix under conditions
+a sequential probe script cannot create: concurrent requests from multiple
+in-flight workers, not one request at a time.
+
+This covers the first half of issue #54's own done-when ("ramp-up shows
+429 and nothing passes above the ceiling") for real, not as a roadmap
+placeholder — earlier conversation history in this project assumed
+ramp-up was still on sapper's roadmap; that assumption was stale. Checking
+sapper's own CHANGELOG.md (not its README, whose "Status"/"Roadmap"
+sections have not been updated since) shows ramp-up, spike and soak
+profiles, and SLO assertions including status_seen, already shipped under
+"## [0.1.0] — unreleased".
+
+The second half — "upstream fault opens the breaker, sheds, recovers" —
+remains genuinely blocked, for a different and more precise reason than
+"not yet built": sapper's fault injector itself exists (an in-process
+reverse proxy injecting error/latency/dropped-connection faults, gated by
+the same tier check as load), but per sapper's own CHANGELOG.md, "Not
+included: A CLI-driven chaos scenario; the fault injector is currently
+exercised through the bastion tie-in test, not a `run` profile." There is
+no scenario type yet that points the injector at an arbitrary external
+target the way ramp-up/spike/sustained do — only sapper's own internal
+test exercises it, against its own test fixtures. sapper has no open
+issue tracking this specific gap at the time of this run (its issue
+tracker is empty of open issues); the citation is sapper's own
+CHANGELOG.md and README.md roadmap entry for "Case 4: Fault injection +
+circuit breaker... (Deferred; the injector port is reserved in the
+architecture)".
+
+T-17's own in-repo coverage (the gateway's ErrorHandler and bastion
+breaker) is unaffected either way: scripts/probe-threats.sh already
+records T-17 as a GAP citing #104 (the gateway is not wired into
+cmd/usher/main.go yet), so there is currently no live /api/** route for a
+fault-injection scenario to target even once sapper gains one.
