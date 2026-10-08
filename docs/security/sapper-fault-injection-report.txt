@@ -1,0 +1,114 @@
+sapper fault-injection run — 2026-10-08, local development machine (RI-06, issue #54, T-17)
+
+Supersedes sapper-report.txt's own "fault injection... remains genuinely
+blocked" finding: sapper/#53 shipped the missing CLI-driven fault-injection
+scenario (ADR-0009 there), closing the gap that report recorded. This run
+drives it against usher's own real gateway and real resource-server, not a
+fixture.
+
+Setup (scratch, torn down after the run — never committed):
+
+$ cp .env.example .env   # filled with generated POSTGRES_PASSWORD,
+                         # REDIS_PASSWORD, USHER_CSRF_SECRET (openssl rand)
+$ docker compose up -d
+$ go run ./cmd/seed      # admin@example.com / usher-local-dev-only
+
+# a real authorization_code exchange against the running AS --
+# client_id=demo-client, scope "openid widgets:read" -- yields ACCESS_TOKEN
+
+# docker-compose.override.yml (scratch, removed after the run):
+#   services:
+#     usher:
+#       environment:
+#         USHER_API_UPSTREAM_URL: http://host.docker.internal:19200
+$ docker compose up -d usher   # recreates the gateway pointed at the
+                               # not-yet-running injector; a probe here
+                               # gets a clean 502 (dial refused), confirming
+                               # RS-20 holds even before any fault is armed
+
+$ cd ../sapper && git checkout feat/fault-injection-cli-scenario
+$ go build -o sapper ./cmd/sapper
+$ export ACCESS_TOKEN=...
+$ ./sapper run    --config usher/docs/security/sapper-fault-injection-config.yaml \
+                   --scenario usher/docs/security/sapper-fault-injection.yaml \
+                   --out sapper-fault-injection-result.json
+$ ./sapper assert --in sapper-fault-injection-result.json
+
+run "usher-gateway-fault-injection-live-verify" (fault-injection) → result.json
+  p99 mean 3.222028ms (±602.556µs over 3 runs), error rate 0.0000
+  verdict: PASS
+
+$ sapper assert --in sapper-fault-injection-result.json
+  [ok] status_seen: status 503 observed 97446 times across 3 runs
+  [ok] recovery_within: post-spike p99 3.271167ms vs baseline 3.934208ms x 1.50 = 5.901312ms
+all SLOs passed
+
+Full metrics and verdict: docs/security/sapper-fault-injection-result.json
+(committed alongside this file). status_counts: 200 (87876, before/after
+phases), 502 (6, the raw dependency failures before bastion.New's default
+failureThreshold=5 tripped), 503 (97446, the breaker's own fast-fail once
+tripped) -- error_rate stayed at 0.0000 throughout, because sapper's own
+client always got a completed HTTP response from usher's gateway; usher
+never hung or crashed under the faulted dependency (RNF-04).
+
+---
+
+Reading this run: the scenario's injector (fault_kind: drop) sits between
+usher's gateway and the real resource-server, forwarding cleanly during
+the before/after phases and aborting the connection (http.ErrAbortHandler)
+during the 20s faulted phase -- the one fault_kind that produces a genuine
+Go transport error, since bastion's isFailure classifier (bastion/breaker.go)
+only ever sees an error, never an HTTP status code; fault_kind: error (a
+direct status response) would never reach usher's breaker at all.
+
+A parallel second-by-second curl probe against GET /api/widgets (outside
+sapper's own load, using a fresh token) shows the exact transition live:
+
+  1s  502   (dial refused -- injector not listening yet; RS-20 holds: no
+             upstream host/port/stack trace in the body, Content-Length: 0)
+  2s  502
+  3s  503   retry-after=30   <- bastion.Breaker opened (5 consecutive
+                                 failures: 2 manual probes + the watcher's
+                                 own + early load before the injector came
+                                 up) -- RI-02 rule 1: 503+Retry-After, never
+                                 a bare 502 or 500, once the breaker itself
+                                 is why the call didn't go through
+  4s..31s  503  retry-after=30   (holds for the breaker's openTimeout)
+  32s  200                   <- half-open probe succeeded; breaker closed
+  33s..46s  200               (the run's own 40s "after" baseline)
+  47s..70s  503  retry-after=30  (the SAME run's own faulted phase starts
+                                   its own 20s window -- confirms the
+                                   breaker is the one documented in RI-02 as
+                                   process-global, "one named breaker per
+                                   upstream," not scoped to one caller or
+                                   one sapper run: the author's own manual
+                                   curl probes and sapper's load share and
+                                   drive the identical breaker state)
+
+A final check well after the run ended (nothing listening on
+profile.listen any more, the sapper process having exited and its injector
+with it) returns 502, not 503 -- confirming the breaker itself had already
+closed again by then; what is reachable now is a genuinely absent
+dependency, not a tripped circuit. The two status codes stay distinguishable
+exactly as RI-02 rule 1 requires.
+
+This closes issue #54's second done-when item ("upstream fault opens the
+breaker, sheds, recovers") for real, against usher's own gateway and real
+resource-server, not sapper's own internal test fixture. T-17's own GAP in
+scripts/probe-threats.sh is updated to cite this file instead of claiming
+the threat is unprobeable -- it is probeable, just not from a single
+sequential black-box HTTP script the way T-01..T-16 are: it needs a second,
+correlated traffic stream (sapper's own load) and a target reconfigured for
+the run's duration, which is exactly what this evidence captures instead.
+
+Residual, stated plainly: this is a recorded run, re-run manually, not a
+CI gate the way scripts/probe-threats.sh is. A regression in the breaker's
+wiring (cmd/usher/router.go) would not fail a build on its own; only a
+repeat of this procedure would catch it. Automating it (wiring this
+scenario into CI, with the docker-compose override and token exchange
+scripted) is future work, not done here.
+
+Scratch infrastructure for this run -- the generated .env, the
+docker-compose.override.yml, the local sapper binary -- was torn down
+after the run (docker compose down -v; rm .env docker-compose.override.yml)
+and nothing from it is committed.
