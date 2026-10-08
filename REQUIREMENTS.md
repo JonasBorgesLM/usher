@@ -541,7 +541,6 @@ cmd/
 internal/
   config/           env + versioned files → Config; fails closed (RNF-03, RNF-05)
   oauth/            protocol only (authorize, token, revoke, introspect)
-    grant/          one Strategy per grant_type
   keys/             keyset loading, rotation schedule, JWKS
   session/          login and consent challenges, user session
   identity/         users, clients, roles
@@ -565,7 +564,10 @@ a commit scope and an issue (#12) already, but no package, which is exactly
 the kind of gap writing signatures before code is supposed to surface.
 `internal/oidc` was removed from it the other way round: planned, never
 filled, and deleted empty by ADR-0001's amendment (#122) — OIDC's handlers
-live in `cmd/usher`, its token claims in `internal/oauth`.
+live in `cmd/usher`, its token claims in `internal/oauth`. `internal/oauth/grant`
+went the same way (#131): `/token` dispatches its three grants with a `switch`
+in `cmd/usher/token.go`, and the `Strategy` interface planned here never had an
+implementation.
 
 ### 7.1 Storage split
 
