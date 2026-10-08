@@ -28,4 +28,4 @@ Vulnerabilities in `moat`, `bastion` or `crier` belong in those repositories.
 
 ## Supported versions
 
-None yet. Nothing is tagged. From `v0.1.0`, the latest tag receives fixes.
+`v0.1.0` and later — the latest tag receives fixes.
