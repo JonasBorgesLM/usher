@@ -1,10 +1,10 @@
-threat probes — 2026-10-07, local development machine (updated after #104, #111)
+threat probes — 2026-10-08, local development machine (updated after #54: T-17's own fault-injection evidence)
 
 $ docker compose up -d
 $ go run ./cmd/seed
 $ ./scripts/probe-threats.sh | tee docs/security/threat-probes.txt
 
-usher threat probes -- 2026-10-07T01:19:15Z
+usher threat probes -- 2026-10-08T12:24:05Z
 against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resource server)
 
 === shared setup: one real authorization_code exchange ===
@@ -73,7 +73,7 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
   PASS  a failed grant's error body carries no internal detail -- RFC 6749 §5.2's fixed codes (RS-25)
 
 === T-17 -- upstream failure cascading into the gateway, or leaking through it (RS-20, RS-21, RI-02) ===
-  GAP   #104 wired the gateway's own /api/** route in, but this threat needs the upstream to actually fail -- a black-box HTTP probe cannot induce that without stopping or breaking the compose stack's own resource-server container, which is a different, more invasive kind of probe than this script runs. sapper's own fault injector (found while working #54) has no CLI-driven scenario yet either -- see #54's own report for the exact citation.
+  GAP   this threat needs the upstream to actually fail, which a single sequential black-box HTTP script cannot induce without a second, correlated traffic stream and the target reconfigured for the run's duration -- a different, more invasive kind of probe than this script runs request-by-request. It IS verified, separately: sapper's fault-injection scenario (sapper/#53, ADR-0009 there) dropped a real connection between usher's gateway and the real resource-server and confirmed bastion.Breaker opens into 503+Retry-After (RI-02 rule 1), recovers, and the gateway never leaks upstream detail on the plain 502 either side of it (RS-20) -- see docs/security/sapper-fault-injection-report.txt and its committed result.json for the full run.
 
 === T-18 -- signing key compromise ===
   GAP   not probeable from outside by design: no endpoint can reveal whether the mounted keyset stayed confined to its mount. Custody and rotation are process controls (ADR-0015), verified by review, not an HTTP probe.
@@ -100,10 +100,9 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
 
 === summary ===
   PASS=30  FAIL=0  GAP=3
-
 ---
 
-Reading this run: this is #52's own report. Two follow-ups updated it
+Reading this run: this is #52's own report. Three follow-ups updated it
 since its first version (preserved in git history, see this file's own
 commit log):
 
@@ -117,6 +116,16 @@ commit log):
   "widgets:read" so the token it mints can exercise the permission at
   all -- RF-05 checks the token's own granted scope, not just what the
   client is registered for.
+- #54 verified T-17 for real, separately from this script: sapper's own
+  fault-injection scenario (sapper/#53, ADR-0009 there) dropped a real
+  connection between usher's gateway and the real resource-server and
+  confirmed bastion.Breaker opens into 503+Retry-After (RI-02 rule 1) and
+  recovers, with RS-20's "no leaked upstream detail" holding on the plain
+  502 either side of the breaker window too. See
+  docs/security/sapper-fault-injection-report.txt and its committed
+  result.json. The tally below still counts T-17 as a GAP -- this script
+  itself still cannot induce an upstream failure sequentially -- but it is
+  no longer an open question the way T-18/T-19 are by design.
 
 Every T-nn in docs/THREAT-MODEL.md still has either a passing probe or
 an explicit GAP line saying why it has none, per §6's own verification
@@ -136,25 +145,14 @@ control in internal/proxy/proxy_test.go instead.
 
 Only three GAPs remain:
 
-- T-17 is the one gateway-specific GAP left. The route now exists, but
-  this threat needs the *upstream* to fail -- a black-box HTTP probe
-  cannot induce that without stopping or breaking the compose stack's
-  own resource-server container, which is a different, more invasive
-  kind of probe than anything else in this script does. Investigating
-  this while working #54 turned up the same gap one level up: sapper's
-  own fault injector exists but has no CLI-driven scenario yet either
-  (see docs/security/sapper-report.txt) -- there is currently no tool in
-  this project's toolbox, black-box or otherwise, that can drive this
-  specific threat for real without manually breaking the stack by hand.
-- T-18 and T-19 remain GAPs by design, unaffected by either follow-up: no
+- T-17 is the one gateway-specific GAP left in THIS script, but it is
+  independently verified -- see the #54 bullet above and
+  docs/security/sapper-fault-injection-report.txt for the full run. A
+  single sequential black-box HTTP script cannot induce an upstream
+  failure on its own; the verification needed a second, correlated
+  traffic stream (sapper's own load generator) and the target
+  reconfigured for the run's duration, which this script does not do.
+- T-18 and T-19 remain GAPs by design, unaffected by any follow-up: no
   HTTP endpoint can answer "did the mounted keyset leak" or "did an
   audit event reach crier" from outside, regardless of what the gateway
   or RBAC do.
-
-REQUIREMENTS §13's own MVP acceptance line -- "/authorize -> login ->
-consent -> code -> /token -> authenticated call through the gateway ->
-refresh -> revocation" -- was independently exercised live, start to
-finish, while verifying both #104 and #111: a real authorization_code
-exchange's access token, carrying widgets:read, was accepted at a real
-GET /api/widgets, proxied to cmd/resource-server, with RF-05's own
-intersection genuinely computed rather than skipped.
