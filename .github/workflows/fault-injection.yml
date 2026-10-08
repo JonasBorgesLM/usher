@@ -1,0 +1,81 @@
+# T-17's live check (RI-02, RNF-04, RI-06): sapper's fault injector between
+# the real gateway and the real resource server (#124). The work is in
+# .github/scripts/check-fault-injection.sh, so it runs locally exactly as
+# here.
+#
+# Advisory by decision (#124): a separate workflow, not part of CI's `CI OK`,
+# so a failure is visible on the PR but never blocks a merge. The SLOs include
+# a latency ratio measured in milliseconds on a shared runner, and #118's own
+# runs already showed that ratio missing by a hair once in two runs.
+#
+# sapper is first-party and pre-1.0, so it is pinned to an exact commit and
+# upgraded by hand, as moat and bastion are (ADR-0011, ADR-0016). Dependabot
+# does not see this ref; changing it is a reviewed edit of SAPPER_REF below.
+name: Fault injection
+
+on:
+  pull_request:
+    paths:
+      - "internal/proxy/**"
+      - "cmd/usher/router.go"
+      - "cmd/usher/main.go"
+      - "docs/security/sapper-fault-injection*.yaml"
+      - "docker-compose.yml"
+      - "Dockerfile.usher"
+      - "scripts/dev-access-token.sh"
+      - ".github/scripts/check-fault-injection.sh"
+      - ".github/workflows/fault-injection.yml"
+  schedule:
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fault-injection-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOEXPERIMENT: jsonv2
+  GO_VERSION: "1.26.6"
+  GOFLAGS: -mod=readonly
+  SAPPER_REF: a26b2c7398ed524928cafad27d77dbb85b22ac2d # sapper main after #53 (fault-injection profile)
+
+jobs:
+  fault-injection:
+    name: sapper fault injection against the real stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+
+      - name: Check out sapper at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: JonasBorgesLM/sapper
+          ref: ${{ env.SAPPER_REF }}
+          path: .sapper
+          persist-credentials: false
+
+      - name: Build sapper
+        working-directory: .sapper
+        run: go build -o "$RUNNER_TEMP/sapper" ./cmd/sapper
+
+      - name: ./.github/scripts/check-fault-injection.sh
+        env:
+          SAPPER: ${{ runner.temp }}/sapper
+          OUT_DIR: ${{ runner.temp }}/fault-injection
+        run: ./.github/scripts/check-fault-injection.sh
+
+      - name: Keep the sapper results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sapper-fault-injection-results
+          path: ${{ runner.temp }}/fault-injection/
+          if-no-files-found: ignore
