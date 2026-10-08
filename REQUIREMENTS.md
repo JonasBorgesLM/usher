@@ -462,7 +462,7 @@ intended.
 
 ## 6. Non-functional requirements
 
-**RNF-01 — Go 1.26.6 floor.** This is the `redisstore` satellite's floor, and it
+**RNF-01 — Go 1.27.2 floor** (1.26.6 as first written; raised by ADR-0008's amendment for GO-2026-6617 — same reasoning, one release later). This is the `redisstore` satellite's floor, and it
 is a *security* floor rather than a language-feature one: that module reaches
 `crypto/tls` and `encoding/asn1`, which carry GO-2026-6090 and GO-2026-5972,
 fixed in 1.26.6. It is 1.26.6 rather than 1.25.13 because Go orders versions

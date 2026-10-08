@@ -31,15 +31,15 @@ env:
   # per-job.
   GOEXPERIMENT: jsonv2
   # The floor (ADR-0008). Build and test here.
-  GO_VERSION: "1.26.6"
+  GO_VERSION: "1.27.2"
   # govulncheck runs on the newest supported toolchain: scanning against a
   # standard library that no longer gets fixes reports findings nothing here
   # can resolve.
   GO_SUPPORTED_VERSION: "stable"
   # golangci-lint typechecks against the stdlib of the toolchain it was built
   # with and refuses a newer one. This pin and LINT_VERSION move together.
-  LINT_GO_VERSION: "1.26.6"
-  LINT_VERSION: "v2.12.2"
+  LINT_GO_VERSION: "1.27.2"
+  LINT_VERSION: "v2.14.0"
   GOSEC_VERSION: "v2.28.0"
   GOVULNCHECK_VERSION: "v1.8.0"
   # Fail rather than silently rewrite go.mod or fetch an unlogged checksum.

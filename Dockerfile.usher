@@ -4,7 +4,7 @@
 # packaging, and a second kind of polish here would be scope the rest of
 # this repository deliberately refuses elsewhere (ADR-0013's own "must
 # stay small" applied to the Dockerfile instead of the demo service).
-FROM golang:1.26.6-alpine AS build
+FROM golang:1.27.2-alpine AS build
 
 # GOEXPERIMENT=jsonv2 is required to build anything reaching internal/keys
 # (jwx/v4/jwk imports encoding/json/v2) -- CLAUDE.md and every CI job in
