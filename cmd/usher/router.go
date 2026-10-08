@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"html/template"
 	"log/slog"
@@ -354,7 +355,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 	// defines "/widgets", never "/api/widgets" -- the prefix is this
 	// gateway's own convention, not the upstream's concern).
 	if deps.GatewayUpstream != nil {
-		breaker, err := bastion.New("resource-server")
+		breaker, err := newGatewayBreaker(deps.Logger)
 		if err != nil {
 			panic("router: build the gateway's bastion.Breaker: " + err.Error())
 		}
@@ -376,4 +377,23 @@ func newRouter(deps routerDeps) *chi.Mux {
 	}
 
 	return r
+}
+
+// newGatewayBreaker is the gateway's one breaker (ADR-0016), logging each
+// circuit transition once. Per-request rejections are deliberately not
+// logged by internal/proxy (#128); this hook is what keeps an open circuit
+// visible without one line per refused request.
+func newGatewayBreaker(logger *slog.Logger) (*bastion.Breaker, error) {
+	return bastion.New("resource-server", bastion.WithHooks(bastion.Hooks{
+		OnStateChange: func(ctx context.Context, ev bastion.StateChangeEvent) {
+			level := slog.LevelInfo
+			if ev.To == bastion.StateOpen {
+				level = slog.LevelWarn
+			}
+			// State.String(): bastion's own hooks doc warns a pipeline with a
+			// type safelist drops its defined State type silently.
+			logger.Log(ctx, level, "gateway: circuit state changed",
+				"breaker", ev.Name, "from", ev.From.String(), "to", ev.To.String())
+		},
+	}))
 }
