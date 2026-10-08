@@ -542,7 +542,6 @@ internal/
   config/           env + versioned files → Config; fails closed (RNF-03, RNF-05)
   oauth/            protocol only (authorize, token, revoke, introspect)
     grant/          one Strategy per grant_type
-  oidc/             discovery, id_token, userinfo
   keys/             keyset loading, rotation schedule, JWKS
   session/          login and consent challenges, user session
   identity/         users, clients, roles
@@ -564,6 +563,9 @@ docs/
 `internal/config` was added to this tree while writing that document — it had
 a commit scope and an issue (#12) already, but no package, which is exactly
 the kind of gap writing signatures before code is supposed to surface.
+`internal/oidc` was removed from it the other way round: planned, never
+filled, and deleted empty by ADR-0001's amendment (#122) — OIDC's handlers
+live in `cmd/usher`, its token claims in `internal/oauth`.
 
 ### 7.1 Storage split
 
