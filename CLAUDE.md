@@ -77,8 +77,9 @@ docker compose up                         # full stack: AS/gateway, resource ser
 
 ## Conventions
 
-- **Git flow:** PRs target `develop`; `main` is releases, and tracks `develop`
-  until `v0.1.0`. Branches `feat/`, `fix/`, `docs/`, `ci/`, `test/`.
+- **Git flow:** PRs target `develop`; `main` is releases and changes only
+  through a release PR (RELEASING.md). Branches `feat/`, `fix/`, `docs/`,
+  `ci/`, `test/`.
 - **Conventional Commits** with this project's scopes (CONTRIBUTING.md). CI
   checks every commit and the PR title. Cite ids in the body: `Refs RS-04`.
 - **Ids are Portuguese-derived** — `RF` functional, `RS` security, `RNF`
