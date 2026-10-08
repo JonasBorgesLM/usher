@@ -30,17 +30,20 @@ env:
   # directly or transitively, so this is workflow-level rather than
   # per-job.
   GOEXPERIMENT: jsonv2
-  # The floor (ADR-0008). Build and test here.
+  # The floor (ADR-0008). Build, test and scan here: govulncheck scans the
+  # toolchain the images ship with, not setup-go's "stable" (ADR-0008's
+  # amendment, #139) -- "stable" lagged a fixed release by hours, and with
+  # GOTOOLCHAIN=local it could not even build a module whose floor was newer.
   GO_VERSION: "1.27.2"
-  # govulncheck runs on the newest supported toolchain: scanning against a
-  # standard library that no longer gets fixes reports findings nothing here
-  # can resolve.
-  GO_SUPPORTED_VERSION: "stable"
   # golangci-lint typechecks against the stdlib of the toolchain it was built
   # with and refuses a newer one. This pin and LINT_VERSION move together.
   LINT_GO_VERSION: "1.27.2"
   LINT_VERSION: "v2.14.0"
-  GOSEC_VERSION: "v2.28.0"
+  # A commit, not a tag: no gosec release yet reads Go 1.27's export data
+  # (v2.28.0 and v2.29.0 both fail with "export data version 5 is greater
+  # than maximum supported version 4"); master at this commit, on
+  # golang.org/x/tools v0.51.0, does. Back to a tag once one carries it (#139).
+  GOSEC_VERSION: "d2b649ec01825c20bd101ec584e559adb287e578"
   GOVULNCHECK_VERSION: "v1.8.0"
   # Fail rather than silently rewrite go.mod or fetch an unlogged checksum.
   GOFLAGS: -mod=readonly
@@ -132,7 +135,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: ${{ env.GO_SUPPORTED_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
       - name: govulncheck
         run: |
