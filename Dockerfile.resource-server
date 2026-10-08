@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 RUN go build -o /out/resource-server ./cmd/resource-server
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/resource-server /usr/local/bin/resource-server
 EXPOSE 8081

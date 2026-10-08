@@ -1,4 +1,4 @@
-# One module, plus the workflow files.
+# One module, the two Dockerfiles, plus the workflow files.
 version: 2
 
 updates:
@@ -25,6 +25,17 @@ updates:
         patterns:
           - "github.com/testcontainers/*"
           - "github.com/docker/*"
+
+  # Both Dockerfiles' base images. Untracked, the runtime stage sat on
+  # alpine:3.20 past its end of support (2026-04-01) without anything noticing.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies]
+    commit-message:
+      prefix: "build(deps)"
 
   # Actions are pinned by version; an action update is a supply-chain change and
   # gets the same review as a code dependency.
