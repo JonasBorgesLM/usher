@@ -11,8 +11,11 @@ subtly wrong. **A study project, not production software** — see the non-goals
 in [`REQUIREMENTS.md`](REQUIREMENTS.md) §1.1 before adding anything that looks
 like a feature.
 
-**Status: pre-implementation.** Requirements, threat model and ADRs exist; code
-does not. Phase 0 (milestone `M0`) is the next work.
+**Status: `v0.1.0`.** All nine phases (`M0`–`M9`) are complete: the full
+OAuth 2.1/OIDC flow, the gateway, RBAC, `client_credentials`, introspection,
+and REQUIREMENTS §13's own verification (threat probes, `warden` and
+`sapper` runs). See [`RELEASING.md`](RELEASING.md) for what a next release
+needs.
 
 Read these before changing anything structural:
 
@@ -69,11 +72,8 @@ govulncheck ./...
 ./.github/scripts/check-boundaries.sh     # ADR-0001
 ./.github/scripts/check-dependencies.sh   # RNF-09
 ./.github/scripts/check-readme-examples.sh  # REQUIREMENTS §10
-docker compose up                         # once phase 0 adds it
+docker compose up                         # full stack: AS/gateway, resource server, Postgres, Redis
 ```
-
-Until the first package exists, the Go jobs print a notice and pass; the notice
-disappears with the first `.go` file. That is the only intended skip.
 
 ## Conventions
 
