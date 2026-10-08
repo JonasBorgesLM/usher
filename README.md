@@ -4,10 +4,10 @@ An OAuth 2.1 / OpenID Connect authorization server and reverse proxy, written
 from scratch in Go to study the parts of authentication that are easy to get
 subtly wrong.
 
-> **Status: pre-implementation.** The requirements and threat model are written;
-> the code is not. Phase progress is in [Roadmap](#roadmap). This is a study
-> project and is **not intended for production** — use Keycloak, Hydra or a
-> hosted IdP for that.
+> **Status: `v0.1.0`.** All phases in [Roadmap](#roadmap) are complete,
+> including REQUIREMENTS §13's own verification. This is a study project and
+> is **not intended for production** — use Keycloak, Hydra or a hosted IdP
+> for that.
 
 ---
 
@@ -184,16 +184,16 @@ Stated up front, because they matter more than the feature list.
 
 ## Roadmap
 
-- [ ] 0 — Foundations: requirements, threat model, ADRs, CI guards, schema, skeleton
-- [ ] 1 — Identity: hashing, constant-work login, session
-- [ ] 2 — Authorization code + PKCE
-- [ ] 3 — Key rotation and JWKS
-- [ ] 4 — Refresh rotation, reuse detection, revocation
-- [ ] 5 — RBAC
-- [ ] 6 — Reverse proxy
-- [ ] 7 — Full OIDC
-- [ ] 8 — `client_credentials`, introspection, hardening
-- [ ] 9 — Verification: threat probes, `warden` and `sapper` runs, `v0.1.0`
+- [x] 0 — Foundations: requirements, threat model, ADRs, CI guards, schema, skeleton
+- [x] 1 — Identity: hashing, constant-work login, session
+- [x] 2 — Authorization code + PKCE
+- [x] 3 — Key rotation and JWKS
+- [x] 4 — Refresh rotation, reuse detection, revocation
+- [x] 5 — RBAC
+- [x] 6 — Reverse proxy
+- [x] 7 — Full OIDC
+- [x] 8 — `client_credentials`, introspection, hardening
+- [x] 9 — Verification: threat probes, `warden` and `sapper` runs, `v0.1.0`
 
 Work is tracked on the project board; each issue cites the requirement and
 the ADR it closes. How to contribute is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
