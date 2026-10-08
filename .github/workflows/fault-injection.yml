@@ -38,7 +38,7 @@ concurrency:
 
 env:
   GOEXPERIMENT: jsonv2
-  GO_VERSION: "1.26.6"
+  GO_VERSION: "1.27.2" # the floor after #139 (GO-2026-6617); a lower one refuses go.mod
   GOFLAGS: -mod=readonly
   SAPPER_REF: a26b2c7398ed524928cafad27d77dbb85b22ac2d # sapper main after #53 (fault-injection profile)
 
