@@ -31,7 +31,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0013`](0013-demo-resource-server-in-repository.md) | Demo resource server in this repository; `task-api` deferred | Accepted | — |
 | [`0014`](0014-access-token-revocation-is-gateway-local.md) | Access-token revocation is gateway-local; the TTL bounds it elsewhere | Accepted | — |
 | [`0015`](0015-signing-keyset-custody-and-rotation.md) | Signing keys as a mounted keyset with explicit windows | Accepted | [Amendment (#3)](0015-signing-keyset-custody-and-rotation.md#amendment--accepted-3) |
-| [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | — |
+| [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | [Amendment (#118)](0016-bastion-guards-the-proxy-path.md#amendment--which-upstream-answers-count-as-failure-118) |
 | [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2) |
 | [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |

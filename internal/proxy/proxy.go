@@ -200,10 +200,43 @@ type breakerRoundTripper struct {
 
 // RoundTrip implements http.RoundTripper, admitting through rt.breaker
 // before ever calling rt.next.
+//
+// bastion classifies only the error an operation returns, and a 5xx answer
+// is not a RoundTrip error — so an upstream that is up but failing would
+// count as healthy forever. An unhealthy answer is therefore carried out
+// of Execute as an error (so it counts against the threshold) and unwrapped
+// back into the response here, so the client still receives the upstream's
+// own answer while the circuit is closed (ADR-0016's amendment).
 func (rt *breakerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
-		return rt.next.RoundTrip(req)
+	resp, err := bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
+		resp, err := rt.next.RoundTrip(req)
+		if err == nil && upstreamUnhealthy(resp.StatusCode) {
+			return nil, &unhealthyUpstreamError{resp: resp}
+		}
+		return resp, err
 	})
+	if unhealthy, ok := errors.AsType[*unhealthyUpstreamError](err); ok {
+		return unhealthy.resp, nil
+	}
+	return resp, err
+}
+
+// upstreamUnhealthy is ADR-0016's amendment: 502, 503 and 504 say the
+// dependency itself is unwell. A 500 is excluded — it is usually one
+// request's own bug, and opening the circuit for it would refuse every
+// request because one endpoint is broken.
+func upstreamUnhealthy(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// unhealthyUpstreamError carries an unhealthy response through
+// bastion.Execute; it never leaves breakerRoundTripper.
+type unhealthyUpstreamError struct {
+	resp *http.Response
+}
+
+func (e *unhealthyUpstreamError) Error() string {
+	return "proxy: upstream answered " + e.resp.Status
 }
 
 // unauthorized is every auth-failure response this handler returns:

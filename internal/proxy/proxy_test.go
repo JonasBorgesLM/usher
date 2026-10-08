@@ -815,6 +815,98 @@ func TestNewHandler_OpenCircuitReturns503WithRetryAfter(t *testing.T) {
 	}
 }
 
+// countingUpstream answers every request with status and a fixed body,
+// counting how many requests actually reached it.
+func countingUpstream(t *testing.T, status int) (srv *httptest.Server, hits func() int32) {
+	t.Helper()
+	var n atomic.Int32
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n.Add(1)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, "from-upstream")
+	}))
+	t.Cleanup(srv.Close)
+	return srv, n.Load
+}
+
+// TestNewHandler_UnhealthyUpstreamOpensBreaker is ADR-0016's amendment
+// (#118): an upstream that is up but answering 502/503/504 counts as a
+// failure, so after bastion's threshold (5 consecutive, the default the
+// router uses) the circuit opens and the gateway stops forwarding. While
+// the circuit was still closed, the client got the upstream's own answer,
+// not a gateway-made one.
+//
+// Negative control: with breakerRoundTripper's upstreamUnhealthy check
+// disabled (every RoundTrip result handed to bastion unchanged), this test
+// failed for every status — request 6 still reached the upstream and came
+// back with its own 502/503/504 and no Retry-After. Verified by hand,
+// restored before committing.
+func TestNewHandler_UnhealthyUpstreamOpensBreaker(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			priv := testRSAKeyPair(t)
+			upstream, hits := countingUpstream(t, status)
+			breaker, err := bastion.New("test-upstream-unhealthy")
+			if err != nil {
+				t.Fatalf("bastion.New: %v", err)
+			}
+			route := testRoute(t, upstream)
+			route.Breaker = breaker
+			handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+			token := testAccessToken(t, priv, "jti-unhealthy", []string{"openid"})
+
+			for i := 1; i <= 5; i++ {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+				if rec.Code != status || rec.Body.String() != "from-upstream" {
+					t.Fatalf("request %d: got %d %q, want the upstream's own %d answer passed through", i, rec.Code, rec.Body.String(), status)
+				}
+				if rec.Header().Get("Retry-After") != "" {
+					t.Fatalf("request %d carried Retry-After before the threshold was reached", i)
+				}
+			}
+
+			for i := 6; i <= 10; i++ {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+					t.Fatalf("request %d: got %d (Retry-After %q), want the open circuit's 503 with Retry-After", i, rec.Code, rec.Header().Get("Retry-After"))
+				}
+			}
+			if got := hits(); got != 5 {
+				t.Errorf("upstream was reached %d times, want 5 — the open circuit must stop forwarding", got)
+			}
+		})
+	}
+}
+
+// TestNewHandler_Upstream500DoesNotOpenBreaker is the other half of the
+// same amendment: a 500 is a request's own bug, not the dependency's
+// health, and must keep flowing through rather than refusing everything.
+func TestNewHandler_Upstream500DoesNotOpenBreaker(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, hits := countingUpstream(t, http.StatusInternalServerError)
+	breaker, err := bastion.New("test-upstream-500")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+	token := testAccessToken(t, priv, "jti-500", []string{"openid"})
+
+	for i := 1; i <= 10; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "from-upstream" {
+			t.Fatalf("request %d: got %d %q, want the upstream's own 500 passed through", i, rec.Code, rec.Body.String())
+		}
+	}
+	if got := hits(); got != 10 {
+		t.Errorf("upstream was reached %d times, want all 10", got)
+	}
+}
+
 // TestNewHandler_BreakerRejectionDoesNotRetryOutboundCall is ADR-0016's
 // own rule 2 at its actual source: bastion.Execute is attempted at most
 // once per incoming request. This is what makes "the rate limiter runs
