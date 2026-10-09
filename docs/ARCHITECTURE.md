@@ -32,7 +32,6 @@ internal/
   config/           NEW. Env + versioned files → Config; fails closed (RNF-05)
   oauth/            protocol only: codes, families, consent, TokenResponse
     grant/          one Strategy per grant_type
-  oidc/             discovery, id_token, userinfo
   keys/             keyset loading, signing, JWKS, the kid denylist
   session/          login/consent challenges, browser sessions
   identity/         users (people) and clients (registered apps)
@@ -48,9 +47,11 @@ pkg/
 ```
 
 **Boundary rule (ADR-0001), restated as what the signatures below must not do:**
-nothing in `internal/oauth` or `internal/oidc` may reference a type from
-`internal/proxy`, and nothing in `internal/proxy` may reference a type from
-`internal/oauth` or `internal/oidc`. §7 below marks, package by package, why
+nothing in `internal/oauth` may reference a type from `internal/proxy`, and
+nothing in `internal/proxy` may reference a type from `internal/oauth`. (An
+`internal/oidc` package was planned here and removed empty by ADR-0001's
+amendment, #122: OIDC's handlers live in `cmd/usher`, its claims in
+`internal/oauth`.) §7 below marks, package by package, why
 this holds by construction rather than by discipline: `internal/proxy` reaches
 tokens only through `pkg/tokenvalidator` and `internal/keys`, never through
 `internal/oauth`'s issuance types.
@@ -593,7 +594,7 @@ if this `Emitter` cannot.
 
 ---
 
-## 9. `internal/proxy` — never imports `internal/oauth` or `internal/oidc`
+## 9. `internal/proxy` — never imports `internal/oauth`
 
 ```go
 package proxy

@@ -16,7 +16,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 
 | ADR | Title | Status | Amended by |
 | --- | --- | --- | --- |
-| [`0001`](0001-one-binary-rigid-package-boundaries.md) | AS and gateway in one binary, with package boundaries CI enforces | Accepted | — |
+| [`0001`](0001-one-binary-rigid-package-boundaries.md) | AS and gateway in one binary, with package boundaries CI enforces | Accepted | [Amendment (#122)](0001-one-binary-rigid-package-boundaries.md#amendment--internaloidc-removed-122) |
 | [`0002`](0002-postgres-holds-refresh-families.md) | Postgres, not Redis, is the source of truth for refresh families | Accepted | — |
 | [`0003`](0003-fail-closed-rate-limiting-noeviction.md) | Rate limiting fails closed; `noeviction` is an infrastructure requirement | Accepted | — |
 | [`0004`](0004-jwx-v4-over-golang-jwt.md) | `jwx/v4` for JOSE and JWKS, over `golang-jwt/v5` | Accepted | — |

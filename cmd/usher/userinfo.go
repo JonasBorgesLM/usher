@@ -10,7 +10,7 @@
 // shape). It never imports internal/proxy to get there — *tokenvalidator
 // .Validator is the one seam RS-18/RS-19's defense in depth already
 // shares between the gateway and this binary, not a reason to import a
-// package ADR-0001 keeps internal/oauth and internal/oidc away from.
+// package ADR-0001 keeps internal/oauth away from.
 //
 // userinfoAudience is RS-08's "/userinfo is itself a protected resource"
 // half: an access token issued for an openid-scoped request carries this

@@ -2,7 +2,7 @@
 // header handling, and the gateway-local revocation check. It imports
 // pkg/tokenvalidator (never internal/keys directly — a Handler is handed an
 // already-constructed *tokenvalidator.Validator) and bastion (RI-02,
-// ADR-0016). It must never import internal/oauth or internal/oidc
+// ADR-0016). It must never import internal/oauth
 // (ADR-0001): the whole reason that boundary holds by construction is that
 // nothing in this package has a way to reach an oauth.Code or oauth.Family
 // type — tokens are opaque strings here, validated, not issued.

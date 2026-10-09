@@ -29,8 +29,10 @@ Read these before changing anything structural:
 ## Architecture
 
 One binary, `cmd/usher`, holds the authorization server and the gateway
-(ADR-0001). The boundary that matters: **`internal/oauth` and `internal/oidc`
-never import `internal/proxy`, and `internal/proxy` never imports them.** They
+(ADR-0001). The boundary that matters: **`internal/oauth` never imports
+`internal/proxy`, and `internal/proxy` never imports it.** OIDC's handlers
+live in `cmd/usher` and its token claims in `internal/oauth` — there is no
+`internal/oidc` (ADR-0001's amendment). They
 meet only in `pkg/tokenvalidator`, `internal/keys` and the stores. CI asserts
 this with `go list -deps` — do not "fix" a failing boundary check by moving a
 type into a shared package without an ADR.
