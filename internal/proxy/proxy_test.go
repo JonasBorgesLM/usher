@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1051,5 +1052,113 @@ func TestNewHandler_BreakerRejectionLeavesOuterLimiterChargedOnce(t *testing.T) 
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// levelCounter is a slog.Handler that only counts records per level.
+type levelCounter struct {
+	mu     sync.Mutex
+	counts map[slog.Level]int
+}
+
+func newLevelCounter() *levelCounter { return &levelCounter{counts: map[slog.Level]int{}} }
+
+func (c *levelCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (c *levelCounter) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[r.Level]++
+	return nil
+}
+func (c *levelCounter) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *levelCounter) WithGroup(string) slog.Handler      { return c }
+func (c *levelCounter) count(l slog.Level) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[l]
+}
+
+// TestNewHandler_OpenCircuitDoesNotLogPerRequest is #128: requests refused
+// by an open circuit are expected behaviour, not one error each — one
+// ERROR line per refused request was a log storm proportional to traffic
+// exactly while the dependency was down (90 186 lines in one sapper run).
+//
+// Negative control: with the logger.ErrorContext call moved back above the
+// breaker branch (where it was), this test failed — 20 ERROR records for
+// 20 refused requests. Verified by hand, restored before committing.
+func TestNewHandler_OpenCircuitDoesNotLogPerRequest(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+	breaker, err := bastion.New("test-upstream-quiet")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	breaker.Trip(context.Background())
+	logs := newLevelCounter()
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-quiet", []string{"openid"})
+
+	for range 20 {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want the open circuit's 503", rec.Code)
+		}
+	}
+	if got := logs.count(slog.LevelError); got != 0 {
+		t.Errorf("%d ERROR records for 20 refused requests, want 0", got)
+	}
+}
+
+// TestNewHandler_ClientCancelIsNotAnUpstreamError: a client that hangs up
+// mid-request is not an upstream failure and must not be logged as one.
+func TestNewHandler_ClientCancelIsNotAnUpstreamError(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); upstream.Close() })
+	logs := newLevelCounter()
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-cancel", []string{"openid"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := proxyRequest("Bearer "+token, nil).WithContext(ctx)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := logs.count(slog.LevelError); got != 0 {
+		t.Errorf("%d ERROR records for a client cancellation, want 0", got)
+	}
+	if got := logs.count(slog.LevelDebug); got != 1 {
+		t.Errorf("%d DEBUG records, want the cancellation noted once", got)
+	}
+}
+
+// TestNewHandler_UpstreamFailureStillLogged is the control for both tests
+// above: a genuine upstream failure (nothing listening) keeps its ERROR
+// line, so quieting the breaker did not quiet real failures.
+func TestNewHandler_UpstreamFailureStillLogged(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	logs := newLevelCounter()
+	handler := NewHandler(testRoute(t, dead), testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-dead", []string{"openid"})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if got := logs.count(slog.LevelError); got != 1 {
+		t.Errorf("%d ERROR records for one failed upstream call, want 1", got)
 	}
 }

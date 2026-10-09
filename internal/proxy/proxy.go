@@ -318,18 +318,31 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.ErrorContext(r.Context(), "proxy: upstream error", "error", err)
 			// ADR-0016 rule 1: a breaker rejection is 503 + Retry-After,
 			// never the bare 502 a genuine upstream failure gets --
 			// "the circuit is open" is not the same fact as "the
 			// upstream is down," and a caller retrying immediately
 			// against a 502 would be doing exactly what the breaker
 			// exists to stop.
+			//
+			// Not logged per request (#128): while the circuit is open
+			// every request lands here, so one line each is a log storm
+			// that scales with traffic exactly while the dependency is
+			// down. The transition itself is logged once, by the
+			// breaker's own OnStateChange hook (cmd/usher/router.go).
 			if errors.Is(err, bastion.ErrOpenState) || errors.Is(err, bastion.ErrTooManyRequests) {
 				w.Header().Set("Retry-After", strconv.Itoa(breakerRetryAfterSeconds))
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
+			// The client went away mid-request: nothing failed upstream,
+			// and nobody is left to read a response.
+			if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+				logger.DebugContext(r.Context(), "proxy: client canceled the request", "error", err)
+				gatewayErrorHandler(w, r, err)
+				return
+			}
+			logger.ErrorContext(r.Context(), "proxy: upstream error", "error", err)
 			gatewayErrorHandler(w, r, err)
 		},
 		// RS-21's response-size half: res.Body is swapped for a reader
