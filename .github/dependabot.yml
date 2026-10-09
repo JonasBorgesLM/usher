@@ -37,8 +37,10 @@ updates:
     commit-message:
       prefix: "build(deps)"
 
-  # Actions are pinned by version; an action update is a supply-chain change and
-  # gets the same review as a code dependency.
+  # Actions are pinned by commit SHA, with the version in a trailing comment
+  # that Dependabot keeps in step: a tag can be moved by whoever controls the
+  # action's repository, a SHA cannot (#125). An action update is a
+  # supply-chain change and gets the same review as a code dependency.
   - package-ecosystem: github-actions
     directory: /
     schedule:
