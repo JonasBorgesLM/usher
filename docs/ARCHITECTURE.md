@@ -31,7 +31,6 @@ cmd/
 internal/
   config/           NEW. Env + versioned files → Config; fails closed (RNF-05)
   oauth/            protocol only: codes, families, consent, TokenResponse
-    grant/          one Strategy per grant_type
   keys/             keyset loading, signing, JWKS, the kid denylist
   session/          login/consent challenges, browser sessions
   identity/         users (people) and clients (registered apps)
@@ -285,9 +284,13 @@ grant its own isolated method with no shared mutable state between them,
 which is the actual property Strategy would have bought, at a smaller cost
 — no interface, no separate package boundary to cross for three methods
 that all live in the one file already wiring `/token`'s shared client
-authentication. `internal/oauth/grant` itself is consequently dead code:
-kept here, not deleted, because removing an unused package is its own
-decision, not a side effect of documenting that it was never adopted.
+authentication. `internal/oauth/grant` itself was consequently dead code,
+kept at first because removing an unused package is its own decision, not a
+side effect of documenting that it was never adopted. **That decision was
+taken in #131: the package is deleted.** The signature above stays as the
+record of what was planned; a fourth grant type would start from the
+`switch` in `token.go`, and reintroduce a Strategy only if that `switch`
+stops being the simpler shape.
 
 ---
 
