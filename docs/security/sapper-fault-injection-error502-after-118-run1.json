@@ -1,0 +1,62 @@
+{
+  "target": {
+    "base_url": "http://localhost:8080",
+    "tier": "lab",
+    "caps": {
+      "max_concurrency": 10,
+      "max_duration": 150000000000
+    }
+  },
+  "scenario": "usher-gateway-fault-injection-error-502",
+  "profile": "fault-injection",
+  "started_at": "2026-10-08T14:54:30.502378-03:00",
+  "completed_at": "2026-10-08T14:56:10.62968-03:00",
+  "aborted": false,
+  "metrics": {
+    "runs": 3,
+    "status_counts": {
+      "200": 65102,
+      "502": 6,
+      "503": 86542
+    },
+    "p50": {
+      "mean": 1204930,
+      "min": 759709,
+      "max": 1556791,
+      "stddev": 332036
+    },
+    "p90": {
+      "mean": 2314986,
+      "min": 1489792,
+      "max": 2825208,
+      "stddev": 588919
+    },
+    "p99": {
+      "mean": 6700139,
+      "min": 3045417,
+      "max": 10546708,
+      "stddev": 3065392
+    },
+    "error_rate": {
+      "mean": 0,
+      "min": 0,
+      "max": 0,
+      "stddev": 0
+    }
+  },
+  "verdict": {
+    "passed": false,
+    "results": [
+      {
+        "name": "status_seen",
+        "passed": true,
+        "detail": "status 503 observed 86542 times across 3 runs (want ≥ 1 — e.g. the rate limiter's 429)"
+      },
+      {
+        "name": "recovery_within",
+        "passed": false,
+        "detail": "post-spike p99 10.546708ms vs baseline 6.508292ms × 1.50 = 9.762438ms"
+      }
+    ]
+  }
+}
