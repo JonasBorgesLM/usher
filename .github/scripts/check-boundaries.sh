@@ -13,12 +13,14 @@
 # on a package at or under TO. Paths are relative to the module.
 RULES='
 internal/oauth           internal/proxy
-internal/oidc            internal/proxy
 internal/proxy           internal/oauth
-internal/proxy           internal/oidc
 pkg                      internal
 cmd/resource-server      internal
 '
+# There is no internal/oidc rule: the package held no code and was removed
+# (ADR-0001's amendment, #122). OIDC's handlers live in cmd/usher, the
+# composition root, which imports everything by design.
+#
 # Why the last two:
 #   pkg/tokenvalidator is the candidate for extraction into moat (REQUIREMENTS
 #   §7.4); a dependency on usher's internals would make that impossible.

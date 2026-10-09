@@ -48,3 +48,27 @@ Split when either (a) the proxy path needs to scale independently of `/token`
 under a measured load, or (b) the keys need a process boundary from
 internet-facing proxy code — for example, when usher is used anywhere its
 non-goals (REQUIREMENTS §1.1) stop holding.
+
+## Amendment — `internal/oidc` removed (#122)
+
+The decision above names `internal/oauth` **and `internal/oidc`** as the
+protocol side of the boundary. `internal/oidc` was created empty in M0 so the
+boundary check had a real package to check, and M7 then built OIDC elsewhere:
+discovery, `/userinfo` and the ID-token handler live in `cmd/usher`
+(`discovery.go`, `userinfo.go`, `token.go`), and the claims they issue are
+built in `internal/oauth`. The package stayed a nine-line doc comment, and
+`check-boundaries.sh`'s two `internal/oidc` rules passed vacuously.
+
+**Decision:** the package is deleted, and the boundary this ADR enforces is
+`internal/oauth` ↔ `internal/proxy`, as it in fact always was.
+
+**What this does not cover, stated so nobody relies on it:** the OIDC handlers
+sit in `cmd/usher`, the composition root, which imports `internal/proxy` by
+design. No package rule keeps them from reaching a proxy type; today none of
+them does. The reopening criterion above is unchanged, and a split under it
+would move these handlers to the AS binary — at which point they either get a
+package of their own again or stay in that binary's `cmd/`.
+
+**The option not taken:** moving the handlers into `internal/oidc` would make
+the documented boundary real, but it is a refactor of working, tested code
+whose only gain is a rule nothing currently violates.

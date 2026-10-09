@@ -29,8 +29,10 @@ Read these before changing anything structural:
 ## Architecture
 
 One binary, `cmd/usher`, holds the authorization server and the gateway
-(ADR-0001). The boundary that matters: **`internal/oauth` and `internal/oidc`
-never import `internal/proxy`, and `internal/proxy` never imports them.** They
+(ADR-0001). The boundary that matters: **`internal/oauth` never imports
+`internal/proxy`, and `internal/proxy` never imports it.** OIDC's handlers
+live in `cmd/usher` and its token claims in `internal/oauth` — there is no
+`internal/oidc` (ADR-0001's amendment). They
 meet only in `pkg/tokenvalidator`, `internal/keys` and the stores. CI asserts
 this with `go list -deps` — do not "fix" a failing boundary check by moving a
 type into a shared package without an ADR.
@@ -44,8 +46,8 @@ fail silently (ADR-0002). Only state whose loss fails safe goes in Redis.
 
 ## Stack
 
-- **Go 1.26.6 floor** — a security floor inherited from `moat/redisstore`, not a
-  feature choice (ADR-0008). Do not lower it; do not "simplify" it to `1.26`.
+- **Go 1.27.2 floor** — a security floor, not a feature choice (ADR-0008 and
+  its amendment: GO-2026-6617). Do not lower it; do not "simplify" it to `1.27`.
 - **`GOEXPERIMENT=jsonv2` is required** (ADR-0004's amendment) — `jwx/v4/jwk`
   imports `encoding/json/v2`/`jsontext`, which do not compile without it. Set
   it before any `go build`/`test`/`vet`/lint/`gosec`/`govulncheck` invocation
@@ -77,8 +79,9 @@ docker compose up                         # full stack: AS/gateway, resource ser
 
 ## Conventions
 
-- **Git flow:** PRs target `develop`; `main` is releases, and tracks `develop`
-  until `v0.1.0`. Branches `feat/`, `fix/`, `docs/`, `ci/`, `test/`.
+- **Git flow:** PRs target `develop`; `main` is releases and changes only
+  through a release PR (RELEASING.md). Branches `feat/`, `fix/`, `docs/`,
+  `ci/`, `test/`.
 - **Conventional Commits** with this project's scopes (CONTRIBUTING.md). CI
   checks every commit and the PR title. Cite ids in the body: `Refs RS-04`.
 - **Ids are Portuguese-derived** — `RF` functional, `RS` security, `RNF`

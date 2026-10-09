@@ -18,15 +18,18 @@ cut.
 - Every pull request targets `develop`. Nothing targets `main` directly.
 - At each release, `develop` merges into `main` and the tag is cut there, so
   `main` is always a released state — and it is what a visitor sees.
-- **Until the first tag exists, `main` tracks `develop`.** There is no released
-  state for it to hold, and a default branch showing an empty project is worse
-  than one showing unreleased work. After each merge into `develop`, fast-forward
-  `main` until `v0.1.0`.
-- **Merge `main` back into `develop` when a release finishes.** Release commits
-  edit the very files the release exists to change; without the merge back the
-  branches diverge in exactly those files. `crier`'s `main` held only an initial
-  commit through six milestones because nobody had written down when it should
-  be updated.
+- **Until the first tag, `main` tracked `develop`** — fast-forwarded after each
+  merge, because there was no released state for it to hold and a default
+  branch showing an empty project is worse than one showing unreleased work.
+  That ended at `v0.1.0`. Since then `main` changes only through a release pull
+  request from `develop`, as RELEASING.md describes.
+- **When a release finishes, confirm nothing on `main` is missing from
+  `develop`.** Release edits land on `develop` before the release PR, so
+  normally the trees are equal and there is nothing to merge back; anything
+  committed to `main` directly must be merged back before the next release, or
+  the branches diverge in exactly those files (RELEASING.md's merge back).
+  `crier`'s `main` held only an initial commit through six milestones because
+  nobody had written down when it should be updated.
 
 ### Branches
 
@@ -180,7 +183,7 @@ implementation.
 
 ## Commands
 
-Single module. Go 1.26.6 or newer (ADR-0008). `GOEXPERIMENT=jsonv2` must be
+Single module. Go 1.27.2 or newer (ADR-0008 and its amendment). `GOEXPERIMENT=jsonv2` must be
 set (ADR-0004's amendment) — `jwx/v4/jwk` does not compile without it.
 
 ```bash
