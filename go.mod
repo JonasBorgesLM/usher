@@ -1,10 +1,11 @@
 module github.com/JonasBorgesLM/usher
 
-// 1.26.6 is a security floor inherited from moat/redisstore, not a language
-// feature choice: that module reaches crypto/tls and encoding/asn1, fixed for
-// GO-2026-6090 and GO-2026-5972 in 1.26.6. 1.25.13 would not do: Go orders
-// versions across lines, so 1.26.5 satisfies it and has neither fix. ADR-0008.
-go 1.26.6
+// 1.27.2 is a security floor, not a language feature choice (ADR-0008 and its
+// amendment). It was 1.26.6 for GO-2026-6090/GO-2026-5972 (inherited from
+// moat/redisstore); GO-2026-6617 (net/http HTTP/2) is fixed in 1.26.9 and
+// 1.27.2, and Go orders versions across lines, so a 1.26.9 floor would be
+// satisfied by 1.27.0 and 1.27.1, which have no fix. Only 1.27.2 covers both.
+go 1.27.2
 
 require (
 	github.com/JonasBorgesLM/bastion v0.2.1

@@ -112,3 +112,55 @@ Scratch infrastructure for this run -- the generated .env, the
 docker-compose.override.yml, the local sapper binary -- was torn down
 after the run (docker compose down -v; rm .env docker-compose.override.yml)
 and nothing from it is committed.
+
+===========================================================================
+Addendum — 2026-10-08, #118: an *answered* failure (injected 502)
+===========================================================================
+
+The run above used fault_kind: drop, a real transport error. #118 found
+that an upstream which answers 502/503/504 never counted as a failure at
+all (bastion classifies only Go errors, and a 5xx is not one), so the
+breaker could not open against an upstream that is up but failing. #118
+amended ADR-0016 and changed breakerRoundTripper to count 502/503/504.
+
+Scenario: docs/security/sapper-fault-injection-error502.yaml — identical
+to the drop scenario except fault_kind: error, fault_status: 502. The
+injected status is 502 so that any 503 the client sees can only be the
+gateway's own open-circuit answer.
+
+Same setup as above (scratch .env, docker-compose.override.yml routing
+USHER_API_UPSTREAM_URL to host.docker.internal:19200, seeded users, a
+real authorization_code token), sapper built from its main at a26b2c7.
+
+Control — the gateway as it was on develop before #118 (43ae11f):
+
+  status_counts: 200=82843  502=24341  503=0
+  [FAIL] status_seen: status 503 observed 0 times
+  [ok]   recovery_within: post p99 6.68ms vs baseline 6.59ms x 1.50
+  -> every one of the 24341 injected 502s was forwarded; the breaker
+     never opened. Result: sapper-fault-injection-error502-before-118.json
+
+With #118 (gateway rebuilt from the fix branch, container recreated so
+the breaker starts closed):
+
+  run 1: status_counts: 200=65102  502=6  503=86542
+         [ok]   status_seen: 503 observed 86542 times
+         [FAIL] recovery_within: post p99 10.55ms vs baseline 6.51ms x 1.50 = 9.76ms
+  run 2: status_counts: 200=70432  502=5  503=90183
+         [ok]   status_seen: 503 observed 90183 times
+         [ok]   recovery_within: post p99 8.67ms vs baseline 6.27ms x 1.50 = 9.41ms
+  Results: sapper-fault-injection-error502-after-118-run{1,2}.json
+
+Reading it: the breaker property #118 is about holds in both runs — five
+or six injected 502s pass through to the client (bastion's default
+threshold is 5 consecutive failures), then the open circuit answers 503
+itself and stops forwarding.
+
+recovery_within is recorded as it happened, not re-run until green: one
+marginal failure, one pass. In both fixed runs the post-fault phase's p99
+sat 1.4-1.6x above the baseline's, where the control's did not move. Not
+established here why. One candidate observed during run 2: the gateway
+logs every rejected request at ERROR ("proxy: upstream error" /
+"bastion: circuit is open") — 90186 lines for that run alone — which is
+an operability problem in its own right (#128) but was not
+shown to be the cause of the latency.

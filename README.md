@@ -85,11 +85,12 @@ mode where a stolen token starts working.
 
 ## Requirements
 
-- **Go 1.26.6 or newer.** This is a security floor, not a language-feature one:
-  it comes from the `moat/redisstore` dependency, which reaches `crypto/tls` and
-  `encoding/asn1`. It is 1.26.6 rather than 1.25.13 because Go orders versions
-  across release lines, so a 1.25.13 floor is satisfied by 1.26.5, which carries
-  neither fix.
+- **Go 1.27.2 or newer.** This is a security floor, not a language-feature one.
+  It started as 1.26.6, inherited from the `moat/redisstore` dependency
+  (`crypto/tls`, `encoding/asn1`), and moved to 1.27.2 for GO-2026-6617
+  (`net/http` HTTP/2). It is 1.27.2 rather than 1.26.9 because Go orders
+  versions across release lines, so a 1.26.9 floor is satisfied by 1.27.0 and
+  1.27.1, which carry no fix (ADR-0008).
 - **Redis with `maxmemory-policy: noeviction`.** Under any eviction policy, Redis
   discards rate-limit buckets without knowing what they are — and preferentially
   discards the bucket of the client already being throttled, which by making no

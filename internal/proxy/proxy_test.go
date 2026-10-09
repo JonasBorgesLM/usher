@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -278,6 +279,77 @@ func TestNewHandler_StripsUnknownIdentityNamespaceHeader(t *testing.T) {
 
 	if got := received().Get("X-Auth-Impersonate"); got != "" {
 		t.Errorf("upstream saw X-Auth-Impersonate = %q, want empty -- an unrecognized identity-namespace header must still be stripped", got)
+	}
+}
+
+// TestNewHandler_ConnectionHeaderCannotStripInjectedIdentity is #137 (RS-17,
+// RI-04): a client naming the identity headers in Connection must not get
+// them removed from the outbound request. Not injection — the client's own
+// X-Auth-* are stripped first — but removal broke RI-04's contract that the
+// gateway always injects all three.
+//
+// Negative control: with NewHandler back on Director (headers set on the
+// inbound request before ReverseProxy's hop-by-hop removal), this test
+// failed — the upstream saw X-Auth-Subject, X-Auth-Client and X-Auth-Scope
+// all empty. Verified by hand, restored before committing.
+func TestNewHandler_ConnectionHeaderCannotStripInjectedIdentity(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+	token := testAccessToken(t, priv, "jti-connection", []string{"openid", "widgets:read"})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, map[string]string{
+		"Connection": "X-Auth-Subject, X-Auth-Client, X-Auth-Scope",
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	h := received()
+	if h == nil {
+		t.Fatal("the upstream was never called")
+	}
+	for _, name := range []string{"X-Auth-Subject", "X-Auth-Client", "X-Auth-Scope"} {
+		if h.Get(name) == "" {
+			t.Errorf("upstream saw no %s: a client's Connection header removed the gateway's own value", name)
+		}
+	}
+	if got := h.Get("X-Auth-Scope"); got != "openid widgets:read" {
+		t.Errorf("X-Auth-Scope = %q, want the token's own scope", got)
+	}
+}
+
+// TestNewHandler_XForwardedForKeepsDirectorShape pins the X-Forwarded-For
+// the upstream sees across the Director -> Rewrite move (#137): the client's
+// address appended to whatever chain arrived, exactly as Director mode did.
+// The resource server's realip (ADR-0010) reads this header.
+func TestNewHandler_XForwardedForKeepsDirectorShape(t *testing.T) {
+	cases := []struct {
+		name, inbound, want string
+	}{
+		{"no prior chain", "", "192.0.2.1"},
+		{"prior chain", "203.0.113.7", "203.0.113.7, 192.0.2.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			priv := testRSAKeyPair(t)
+			upstream, received := capturingUpstream(t, http.StatusOK)
+			handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+			token := testAccessToken(t, priv, "jti-xff", []string{"openid"})
+			extra := map[string]string{}
+			if tc.inbound != "" {
+				extra["X-Forwarded-For"] = tc.inbound
+			}
+			req := proxyRequest("Bearer "+token, extra)
+			req.RemoteAddr = "192.0.2.1:1234"
+
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := received().Get("X-Forwarded-For"); got != tc.want {
+				t.Errorf("upstream X-Forwarded-For = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -815,6 +887,98 @@ func TestNewHandler_OpenCircuitReturns503WithRetryAfter(t *testing.T) {
 	}
 }
 
+// countingUpstream answers every request with status and a fixed body,
+// counting how many requests actually reached it.
+func countingUpstream(t *testing.T, status int) (srv *httptest.Server, hits func() int32) {
+	t.Helper()
+	var n atomic.Int32
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n.Add(1)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, "from-upstream")
+	}))
+	t.Cleanup(srv.Close)
+	return srv, n.Load
+}
+
+// TestNewHandler_UnhealthyUpstreamOpensBreaker is ADR-0016's amendment
+// (#118): an upstream that is up but answering 502/503/504 counts as a
+// failure, so after bastion's threshold (5 consecutive, the default the
+// router uses) the circuit opens and the gateway stops forwarding. While
+// the circuit was still closed, the client got the upstream's own answer,
+// not a gateway-made one.
+//
+// Negative control: with breakerRoundTripper's upstreamUnhealthy check
+// disabled (every RoundTrip result handed to bastion unchanged), this test
+// failed for every status — request 6 still reached the upstream and came
+// back with its own 502/503/504 and no Retry-After. Verified by hand,
+// restored before committing.
+func TestNewHandler_UnhealthyUpstreamOpensBreaker(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			priv := testRSAKeyPair(t)
+			upstream, hits := countingUpstream(t, status)
+			breaker, err := bastion.New("test-upstream-unhealthy")
+			if err != nil {
+				t.Fatalf("bastion.New: %v", err)
+			}
+			route := testRoute(t, upstream)
+			route.Breaker = breaker
+			handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+			token := testAccessToken(t, priv, "jti-unhealthy", []string{"openid"})
+
+			for i := 1; i <= 5; i++ {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+				if rec.Code != status || rec.Body.String() != "from-upstream" {
+					t.Fatalf("request %d: got %d %q, want the upstream's own %d answer passed through", i, rec.Code, rec.Body.String(), status)
+				}
+				if rec.Header().Get("Retry-After") != "" {
+					t.Fatalf("request %d carried Retry-After before the threshold was reached", i)
+				}
+			}
+
+			for i := 6; i <= 10; i++ {
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+				if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") == "" {
+					t.Fatalf("request %d: got %d (Retry-After %q), want the open circuit's 503 with Retry-After", i, rec.Code, rec.Header().Get("Retry-After"))
+				}
+			}
+			if got := hits(); got != 5 {
+				t.Errorf("upstream was reached %d times, want 5 — the open circuit must stop forwarding", got)
+			}
+		})
+	}
+}
+
+// TestNewHandler_Upstream500DoesNotOpenBreaker is the other half of the
+// same amendment: a 500 is a request's own bug, not the dependency's
+// health, and must keep flowing through rather than refusing everything.
+func TestNewHandler_Upstream500DoesNotOpenBreaker(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, hits := countingUpstream(t, http.StatusInternalServerError)
+	breaker, err := bastion.New("test-upstream-500")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+	token := testAccessToken(t, priv, "jti-500", []string{"openid"})
+
+	for i := 1; i <= 10; i++ {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != "from-upstream" {
+			t.Fatalf("request %d: got %d %q, want the upstream's own 500 passed through", i, rec.Code, rec.Body.String())
+		}
+	}
+	if got := hits(); got != 10 {
+		t.Errorf("upstream was reached %d times, want all 10", got)
+	}
+}
+
 // TestNewHandler_BreakerRejectionDoesNotRetryOutboundCall is ADR-0016's
 // own rule 2 at its actual source: bastion.Execute is attempted at most
 // once per incoming request. This is what makes "the rate limiter runs
@@ -888,5 +1052,113 @@ func TestNewHandler_BreakerRejectionLeavesOuterLimiterChargedOnce(t *testing.T) 
 	}
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
+// levelCounter is a slog.Handler that only counts records per level.
+type levelCounter struct {
+	mu     sync.Mutex
+	counts map[slog.Level]int
+}
+
+func newLevelCounter() *levelCounter { return &levelCounter{counts: map[slog.Level]int{}} }
+
+func (c *levelCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (c *levelCounter) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.counts[r.Level]++
+	return nil
+}
+func (c *levelCounter) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *levelCounter) WithGroup(string) slog.Handler      { return c }
+func (c *levelCounter) count(l slog.Level) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[l]
+}
+
+// TestNewHandler_OpenCircuitDoesNotLogPerRequest is #128: requests refused
+// by an open circuit are expected behaviour, not one error each — one
+// ERROR line per refused request was a log storm proportional to traffic
+// exactly while the dependency was down (90 186 lines in one sapper run).
+//
+// Negative control: with the logger.ErrorContext call moved back above the
+// breaker branch (where it was), this test failed — 20 ERROR records for
+// 20 refused requests. Verified by hand, restored before committing.
+func TestNewHandler_OpenCircuitDoesNotLogPerRequest(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+	breaker, err := bastion.New("test-upstream-quiet")
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	breaker.Trip(context.Background())
+	logs := newLevelCounter()
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-quiet", []string{"openid"})
+
+	for range 20 {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want the open circuit's 503", rec.Code)
+		}
+	}
+	if got := logs.count(slog.LevelError); got != 0 {
+		t.Errorf("%d ERROR records for 20 refused requests, want 0", got)
+	}
+}
+
+// TestNewHandler_ClientCancelIsNotAnUpstreamError: a client that hangs up
+// mid-request is not an upstream failure and must not be logged as one.
+func TestNewHandler_ClientCancelIsNotAnUpstreamError(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() { close(release); upstream.Close() })
+	logs := newLevelCounter()
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-cancel", []string{"openid"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := proxyRequest("Bearer "+token, nil).WithContext(ctx)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := logs.count(slog.LevelError); got != 0 {
+		t.Errorf("%d ERROR records for a client cancellation, want 0", got)
+	}
+	if got := logs.count(slog.LevelDebug); got != 1 {
+		t.Errorf("%d DEBUG records, want the cancellation noted once", got)
+	}
+}
+
+// TestNewHandler_UpstreamFailureStillLogged is the control for both tests
+// above: a genuine upstream failure (nothing listening) keeps its ERROR
+// line, so quieting the breaker did not quiet real failures.
+func TestNewHandler_UpstreamFailureStillLogged(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	dead := httptest.NewServer(http.NotFoundHandler())
+	dead.Close()
+	logs := newLevelCounter()
+	handler := NewHandler(testRoute(t, dead), testValidator(t, priv), newFakeDenylist(), nil, nil, slog.New(logs))
+	token := testAccessToken(t, priv, "jti-dead", []string{"openid"})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if got := logs.count(slog.LevelError); got != 1 {
+		t.Errorf("%d ERROR records for one failed upstream call, want 1", got)
 	}
 }

@@ -200,10 +200,43 @@ type breakerRoundTripper struct {
 
 // RoundTrip implements http.RoundTripper, admitting through rt.breaker
 // before ever calling rt.next.
+//
+// bastion classifies only the error an operation returns, and a 5xx answer
+// is not a RoundTrip error — so an upstream that is up but failing would
+// count as healthy forever. An unhealthy answer is therefore carried out
+// of Execute as an error (so it counts against the threshold) and unwrapped
+// back into the response here, so the client still receives the upstream's
+// own answer while the circuit is closed (ADR-0016's amendment).
 func (rt *breakerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
-		return rt.next.RoundTrip(req)
+	resp, err := bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
+		resp, err := rt.next.RoundTrip(req)
+		if err == nil && upstreamUnhealthy(resp.StatusCode) {
+			return nil, &unhealthyUpstreamError{resp: resp}
+		}
+		return resp, err
 	})
+	if unhealthy, ok := errors.AsType[*unhealthyUpstreamError](err); ok {
+		return unhealthy.resp, nil
+	}
+	return resp, err
+}
+
+// upstreamUnhealthy is ADR-0016's amendment: 502, 503 and 504 say the
+// dependency itself is unwell. A 500 is excluded — it is usually one
+// request's own bug, and opening the circuit for it would refuse every
+// request because one endpoint is broken.
+func upstreamUnhealthy(status int) bool {
+	return status == http.StatusBadGateway || status == http.StatusServiceUnavailable || status == http.StatusGatewayTimeout
+}
+
+// unhealthyUpstreamError carries an unhealthy response through
+// bastion.Execute; it never leaves breakerRoundTripper.
+type unhealthyUpstreamError struct {
+	resp *http.Response
+}
+
+func (e *unhealthyUpstreamError) Error() string {
+	return "proxy: upstream answered " + e.resp.Status
 }
 
 // unauthorized is every auth-failure response this handler returns:
@@ -255,25 +288,61 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 	}
 
 	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = route.Upstream.Scheme
-			req.URL.Host = route.Upstream.Host
-			req.Host = route.Upstream.Host
+		// Rewrite, not Director (#137): ReverseProxy removes the hop-by-hop
+		// headers a client names in Connection *after* Director runs, so a
+		// client sending "Connection: X-Auth-Subject" could delete the
+		// identity the gateway injected. Rewrite runs after that removal,
+		// on pr.Out, so what is set here reaches the upstream.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = route.Upstream.Scheme
+			pr.Out.URL.Host = route.Upstream.Host
+			pr.Out.Host = route.Upstream.Host
+			// pr.In holds only the gateway's own X-Auth-* values by now:
+			// stripIdentityHeaders removed the client's before they were set.
+			for name, values := range pr.In.Header {
+				if strings.HasPrefix(name, identityHeaderPrefix) {
+					pr.Out.Header[name] = values
+				}
+			}
+			// Director mode appended the client's address to any existing
+			// X-Forwarded-For; Rewrite mode drops the header instead. Keep the
+			// old shape, which the resource server's realip (ADR-0010) reads.
+			// SetXForwarded is not used: it would also add X-Forwarded-Host and
+			// -Proto, which nothing downstream expects.
+			if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				if prior := pr.In.Header.Values("X-Forwarded-For"); len(prior) > 0 {
+					clientIP = strings.Join(prior, ", ") + ", " + clientIP
+				}
+				pr.Out.Header.Set("X-Forwarded-For", clientIP)
+			}
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.ErrorContext(r.Context(), "proxy: upstream error", "error", err)
 			// ADR-0016 rule 1: a breaker rejection is 503 + Retry-After,
 			// never the bare 502 a genuine upstream failure gets --
 			// "the circuit is open" is not the same fact as "the
 			// upstream is down," and a caller retrying immediately
 			// against a 502 would be doing exactly what the breaker
 			// exists to stop.
+			//
+			// Not logged per request (#128): while the circuit is open
+			// every request lands here, so one line each is a log storm
+			// that scales with traffic exactly while the dependency is
+			// down. The transition itself is logged once, by the
+			// breaker's own OnStateChange hook (cmd/usher/router.go).
 			if errors.Is(err, bastion.ErrOpenState) || errors.Is(err, bastion.ErrTooManyRequests) {
 				w.Header().Set("Retry-After", strconv.Itoa(breakerRetryAfterSeconds))
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}
+			// The client went away mid-request: nothing failed upstream,
+			// and nobody is left to read a response.
+			if r.Context().Err() != nil && errors.Is(err, context.Canceled) {
+				logger.DebugContext(r.Context(), "proxy: client canceled the request", "error", err)
+				gatewayErrorHandler(w, r, err)
+				return
+			}
+			logger.ErrorContext(r.Context(), "proxy: upstream error", "error", err)
 			gatewayErrorHandler(w, r, err)
 		},
 		// RS-21's response-size half: res.Body is swapped for a reader
