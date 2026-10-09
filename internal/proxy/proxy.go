@@ -255,10 +255,33 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 	}
 
 	rp := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = route.Upstream.Scheme
-			req.URL.Host = route.Upstream.Host
-			req.Host = route.Upstream.Host
+		// Rewrite, not Director (#137): ReverseProxy removes the hop-by-hop
+		// headers a client names in Connection *after* Director runs, so a
+		// client sending "Connection: X-Auth-Subject" could delete the
+		// identity the gateway injected. Rewrite runs after that removal,
+		// on pr.Out, so what is set here reaches the upstream.
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.Out.URL.Scheme = route.Upstream.Scheme
+			pr.Out.URL.Host = route.Upstream.Host
+			pr.Out.Host = route.Upstream.Host
+			// pr.In holds only the gateway's own X-Auth-* values by now:
+			// stripIdentityHeaders removed the client's before they were set.
+			for name, values := range pr.In.Header {
+				if strings.HasPrefix(name, identityHeaderPrefix) {
+					pr.Out.Header[name] = values
+				}
+			}
+			// Director mode appended the client's address to any existing
+			// X-Forwarded-For; Rewrite mode drops the header instead. Keep the
+			// old shape, which the resource server's realip (ADR-0010) reads.
+			// SetXForwarded is not used: it would also add X-Forwarded-Host and
+			// -Proto, which nothing downstream expects.
+			if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				if prior := pr.In.Header.Values("X-Forwarded-For"); len(prior) > 0 {
+					clientIP = strings.Join(prior, ", ") + ", " + clientIP
+				}
+				pr.Out.Header.Set("X-Forwarded-For", clientIP)
+			}
 		},
 		Transport: transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {

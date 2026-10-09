@@ -281,6 +281,77 @@ func TestNewHandler_StripsUnknownIdentityNamespaceHeader(t *testing.T) {
 	}
 }
 
+// TestNewHandler_ConnectionHeaderCannotStripInjectedIdentity is #137 (RS-17,
+// RI-04): a client naming the identity headers in Connection must not get
+// them removed from the outbound request. Not injection — the client's own
+// X-Auth-* are stripped first — but removal broke RI-04's contract that the
+// gateway always injects all three.
+//
+// Negative control: with NewHandler back on Director (headers set on the
+// inbound request before ReverseProxy's hop-by-hop removal), this test
+// failed — the upstream saw X-Auth-Subject, X-Auth-Client and X-Auth-Scope
+// all empty. Verified by hand, restored before committing.
+func TestNewHandler_ConnectionHeaderCannotStripInjectedIdentity(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, received := capturingUpstream(t, http.StatusOK)
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+	token := testAccessToken(t, priv, "jti-connection", []string{"openid", "widgets:read"})
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, map[string]string{
+		"Connection": "X-Auth-Subject, X-Auth-Client, X-Auth-Scope",
+	}))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	h := received()
+	if h == nil {
+		t.Fatal("the upstream was never called")
+	}
+	for _, name := range []string{"X-Auth-Subject", "X-Auth-Client", "X-Auth-Scope"} {
+		if h.Get(name) == "" {
+			t.Errorf("upstream saw no %s: a client's Connection header removed the gateway's own value", name)
+		}
+	}
+	if got := h.Get("X-Auth-Scope"); got != "openid widgets:read" {
+		t.Errorf("X-Auth-Scope = %q, want the token's own scope", got)
+	}
+}
+
+// TestNewHandler_XForwardedForKeepsDirectorShape pins the X-Forwarded-For
+// the upstream sees across the Director -> Rewrite move (#137): the client's
+// address appended to whatever chain arrived, exactly as Director mode did.
+// The resource server's realip (ADR-0010) reads this header.
+func TestNewHandler_XForwardedForKeepsDirectorShape(t *testing.T) {
+	cases := []struct {
+		name, inbound, want string
+	}{
+		{"no prior chain", "", "192.0.2.1"},
+		{"prior chain", "203.0.113.7", "203.0.113.7, 192.0.2.1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			priv := testRSAKeyPair(t)
+			upstream, received := capturingUpstream(t, http.StatusOK)
+			handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+			token := testAccessToken(t, priv, "jti-xff", []string{"openid"})
+			extra := map[string]string{}
+			if tc.inbound != "" {
+				extra["X-Forwarded-For"] = tc.inbound
+			}
+			req := proxyRequest("Bearer "+token, extra)
+			req.RemoteAddr = "192.0.2.1:1234"
+
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			if got := received().Get("X-Forwarded-For"); got != tc.want {
+				t.Errorf("upstream X-Forwarded-For = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNewHandler_InjectsValidatedClaims is RF-08/RI-04's own golden path:
 // a correctly authenticated request reaches the upstream carrying the
 // gateway's own identity headers, derived from the validated token, not

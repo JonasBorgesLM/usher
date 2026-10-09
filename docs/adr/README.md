@@ -23,7 +23,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0005`](0005-argon2id-versioned-bounded.md) | Argon2id, versioned per record, under a concurrency bound | Accepted | — |
 | [`0006`](0006-explicit-middleware-composition.md) | Explicit middleware composition, not `preset.API` | Accepted | — |
 | [`0007`](0007-forward-original-token-rs-revalidates.md) | Forward the original token; the resource server re-validates | Accepted | — |
-| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | — |
+| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | [Amendment (#139)](0008-go-floor-1-26-6.md#amendment--the-floor-moves-to-1272-for-go-2026-6617-139) |
 | [`0009`](0009-record-tokenvalidator-signature-changes.md) | Record `tokenvalidator` signature changes every phase | Accepted | — |
 | [`0010`](0010-realip-topology-both-sides.md) | `realip` topology declared on both sides, never `0.0.0.0/0` | Accepted | [Amendment (#8)](0010-realip-topology-both-sides.md#amendment--the-compose-networks-concrete-range-8) |
 | [`0011`](0011-moat-trust-decision.md) | `moat` trusted as first-party, pinned exactly, never auto-upgraded | Accepted | — |

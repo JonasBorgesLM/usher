@@ -44,8 +44,8 @@ fail silently (ADR-0002). Only state whose loss fails safe goes in Redis.
 
 ## Stack
 
-- **Go 1.26.6 floor** — a security floor inherited from `moat/redisstore`, not a
-  feature choice (ADR-0008). Do not lower it; do not "simplify" it to `1.26`.
+- **Go 1.27.2 floor** — a security floor, not a feature choice (ADR-0008 and
+  its amendment: GO-2026-6617). Do not lower it; do not "simplify" it to `1.27`.
 - **`GOEXPERIMENT=jsonv2` is required** (ADR-0004's amendment) — `jwx/v4/jwk`
   imports `encoding/json/v2`/`jsontext`, which do not compile without it. Set
   it before any `go build`/`test`/`vet`/lint/`gosec`/`govulncheck` invocation
