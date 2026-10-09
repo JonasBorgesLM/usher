@@ -1,0 +1,18 @@
+# sapper safety config for the fault-injection run against usher's gateway
+# (RI-06, issue #54, T-17). Separate from sapper-config.yaml (the ramp-up
+# run's own config): that one's auto_abort ceilings (error_rate_over: 0.9)
+# would trip almost immediately once the fault phase starts failing nearly
+# every request on purpose, aborting the run before the breaker ever gets
+# to recover. A deliberately faulted dependency is not "the target already
+# falling over" (SR-05's own distinction) -- auto_abort is left unset here.
+schema_version: 1
+
+target:
+  base_url: http://localhost:8080
+  tier: lab
+
+blast_radius:
+  max_concurrency: 10
+  # Covers baseline (40s) + faulted (20s) + after (40s) across sapper's own
+  # 3-run aggregation (FR-07), plus margin.
+  max_duration: 150s

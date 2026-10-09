@@ -462,7 +462,7 @@ intended.
 
 ## 6. Non-functional requirements
 
-**RNF-01 — Go 1.26.6 floor.** This is the `redisstore` satellite's floor, and it
+**RNF-01 — Go 1.27.2 floor** (1.26.6 as first written; raised by ADR-0008's amendment for GO-2026-6617 — same reasoning, one release later). This is the `redisstore` satellite's floor, and it
 is a *security* floor rather than a language-feature one: that module reaches
 `crypto/tls` and `encoding/asn1`, which carry GO-2026-6090 and GO-2026-5972,
 fixed in 1.26.6. It is 1.26.6 rather than 1.25.13 because Go orders versions
@@ -541,8 +541,6 @@ cmd/
 internal/
   config/           env + versioned files → Config; fails closed (RNF-03, RNF-05)
   oauth/            protocol only (authorize, token, revoke, introspect)
-    grant/          one Strategy per grant_type
-  oidc/             discovery, id_token, userinfo
   keys/             keyset loading, rotation schedule, JWKS
   session/          login and consent challenges, user session
   identity/         users, clients, roles
@@ -564,6 +562,12 @@ docs/
 `internal/config` was added to this tree while writing that document — it had
 a commit scope and an issue (#12) already, but no package, which is exactly
 the kind of gap writing signatures before code is supposed to surface.
+`internal/oidc` was removed from it the other way round: planned, never
+filled, and deleted empty by ADR-0001's amendment (#122) — OIDC's handlers
+live in `cmd/usher`, its token claims in `internal/oauth`. `internal/oauth/grant`
+went the same way (#131): `/token` dispatches its three grants with a `switch`
+in `cmd/usher/token.go`, and the `Strategy` interface planned here never had an
+implementation.
 
 ### 7.1 Storage split
 

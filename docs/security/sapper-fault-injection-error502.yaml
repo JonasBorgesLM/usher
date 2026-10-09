@@ -1,0 +1,31 @@
+# #118's live check: the same run as sapper-fault-injection.yaml, but the
+# injector answers 502 instead of dropping the connection. Before #118 an
+# answered failure never reached bastion as one, so the breaker stayed
+# closed. The injected status is 502, NOT 503, on purpose: a 503 the client
+# sees can then only be the gateway's own open-circuit answer, so
+# status_seen: 503 measures the breaker and nothing else.
+#
+# Same operational requirement as sapper-fault-injection.yaml: usher's
+# USHER_API_UPSTREAM_URL must point at profile.listen for the run.
+name: usher-gateway-fault-injection-error-502
+profile:
+  type: fault-injection
+  baseline_concurrency: 2
+  baseline_duration: 40s
+  concurrency: 3           # the faulted phase's load
+  duration: 20s             # the faulted phase's length
+  upstream: http://localhost:8081   # the real resource-server, reachable from the host
+  listen: 0.0.0.0:19200             # usher's own upstream is pointed here for the run
+  fault_kind: error
+  fault_status: 502
+request:
+  method: GET
+  path: /api/widgets
+  headers:
+    # FR-10: expanded from the environment, never committed as a literal
+    # value. A fresh access_token from the real authorization_code flow,
+    # scope "openid widgets:read" (see the report's own token step).
+    Authorization: "Bearer ${ACCESS_TOKEN}"
+slos:
+  status_seen: 503        # the breaker's own fast-fail status (RI-02 rule 1)
+  recovery_within: 1.5    # post-fault p99 <= pre-fault p99 x 1.5
