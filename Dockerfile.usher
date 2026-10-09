@@ -18,7 +18,7 @@ RUN go mod download
 COPY . .
 RUN go build -o /out/usher ./cmd/usher
 
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/usher /usr/local/bin/usher
 EXPOSE 8080
