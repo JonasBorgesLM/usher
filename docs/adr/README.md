@@ -37,6 +37,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
 | [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
+| [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Proposed | — |
 
 ## Reopening criteria on the record
 
@@ -59,7 +60,8 @@ decided is the one that gets implemented by accident.
 
 | Question | Blocks | Where |
 | --- | --- | --- |
+| Run usher on Kubernetes as a disposable validation cluster (one binary; pod-CIDR trust backed by a NetworkPolicy; non-root images; a pre-stop delay)? | the `k8s/` manifests and the non-root Dockerfiles | [ADR-0022](0022-kubernetes-as-a-disposable-validation-cluster.md) (Proposed) |
 
-None currently open. The one entry this table held — whether
+Before ADR-0022, none was open. The one earlier entry this table held — whether
 `Clear-Site-Data: "cookies"` on logout may clear the whole registrable
 domain — was decided in [ADR-0021](0021-clear-site-data-omits-cookies-on-logout.md) (#48).
