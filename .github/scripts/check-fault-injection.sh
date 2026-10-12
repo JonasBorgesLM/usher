@@ -39,6 +39,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# clocks records the host's and the usher container's clocks next to the
+# token's exp claim (not secret: a timestamp). #145 saw two stacks out of nine
+# where every request turned 401 partway through a run and stayed there; a
+# jump in the Docker VM's clock expiring the 5-minute token is the leading
+# hypothesis, and this is what would confirm or rule it out next time.
+clocks() {
+  local vm exp
+  vm=$(docker compose exec -T usher date -u +%s 2>/dev/null || echo unknown)
+  exp=$(printf '%s' "${ACCESS_TOKEN:-}" | python3 -c 'import sys,json,base64
+p=sys.stdin.read().split(".")
+print(json.loads(base64.urlsafe_b64decode(p[1]+"=="*2)).get("exp","?") if len(p)==3 else "no-token")' 2>/dev/null || echo unparsable)
+  echo "clocks ($1): host=$(date -u +%s) vm=$vm token_exp=$exp"
+}
+
 umask 077
 pg_pw=$(openssl rand -hex 16)
 redis_pw=$(openssl rand -hex 16)
@@ -87,6 +101,7 @@ for scenario in docs/security/sapper-fault-injection*.yaml; do
   docker compose up -d --wait --force-recreate --no-deps usher
   ACCESS_TOKEN=$(./scripts/dev-access-token.sh)
   export ACCESS_TOKEN
+  clocks "before ${name}" | tee "$out/${name}.clocks"
   "$SAPPER" run --config docs/security/sapper-fault-injection-config.yaml \
     --scenario "$scenario" --out "$out/${name}.json"
   if "$SAPPER" assert --in "$out/${name}.json"; then
@@ -94,6 +109,14 @@ for scenario in docs/security/sapper-fault-injection*.yaml; do
   else
     echo "FAIL  ${name}"
     failed=1
+    # Evidence before the next scenario recreates usher: the clocks again, and
+    # every container's log (no secrets by RS-23), into OUT_DIR, which the
+    # workflow uploads as an artifact.
+    clocks "after ${name}" | tee -a "$out/${name}.clocks"
+    # The resource server logs every request (~175k lines a run), so only its
+    # tail; the rest in full.
+    docker compose logs --no-color usher postgres redis > "$out/${name}.compose.log" 2>&1 || true
+    docker compose logs --no-color --tail 2000 resource-server >> "$out/${name}.compose.log" 2>&1 || true
   fi
   ran=$((ran + 1))
 done
