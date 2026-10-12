@@ -16,14 +16,14 @@ named `0000-` so it does not read as a decision or trip the index check.
 
 | ADR | Title | Status | Amended by |
 | --- | --- | --- | --- |
-| [`0001`](0001-one-binary-rigid-package-boundaries.md) | AS and gateway in one binary, with package boundaries CI enforces | Accepted | — |
+| [`0001`](0001-one-binary-rigid-package-boundaries.md) | AS and gateway in one binary, with package boundaries CI enforces | Accepted | [Amendment (#122)](0001-one-binary-rigid-package-boundaries.md#amendment--internaloidc-removed-122) |
 | [`0002`](0002-postgres-holds-refresh-families.md) | Postgres, not Redis, is the source of truth for refresh families | Accepted | — |
 | [`0003`](0003-fail-closed-rate-limiting-noeviction.md) | Rate limiting fails closed; `noeviction` is an infrastructure requirement | Accepted | — |
 | [`0004`](0004-jwx-v4-over-golang-jwt.md) | `jwx/v4` for JOSE and JWKS, over `golang-jwt/v5` | Accepted | — |
 | [`0005`](0005-argon2id-versioned-bounded.md) | Argon2id, versioned per record, under a concurrency bound | Accepted | — |
 | [`0006`](0006-explicit-middleware-composition.md) | Explicit middleware composition, not `preset.API` | Accepted | — |
 | [`0007`](0007-forward-original-token-rs-revalidates.md) | Forward the original token; the resource server re-validates | Accepted | — |
-| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | — |
+| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | [Amendment (#139)](0008-go-floor-1-26-6.md#amendment--the-floor-moves-to-1272-for-go-2026-6617-139) |
 | [`0009`](0009-record-tokenvalidator-signature-changes.md) | Record `tokenvalidator` signature changes every phase | Accepted | — |
 | [`0010`](0010-realip-topology-both-sides.md) | `realip` topology declared on both sides, never `0.0.0.0/0` | Accepted | [Amendment (#8)](0010-realip-topology-both-sides.md#amendment--the-compose-networks-concrete-range-8) |
 | [`0011`](0011-moat-trust-decision.md) | `moat` trusted as first-party, pinned exactly, never auto-upgraded | Accepted | — |
@@ -31,7 +31,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0013`](0013-demo-resource-server-in-repository.md) | Demo resource server in this repository; `task-api` deferred | Accepted | — |
 | [`0014`](0014-access-token-revocation-is-gateway-local.md) | Access-token revocation is gateway-local; the TTL bounds it elsewhere | Accepted | — |
 | [`0015`](0015-signing-keyset-custody-and-rotation.md) | Signing keys as a mounted keyset with explicit windows | Accepted | [Amendment (#3)](0015-signing-keyset-custody-and-rotation.md#amendment--accepted-3) |
-| [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | — |
+| [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | [Amendment (#118)](0016-bastion-guards-the-proxy-path.md#amendment--which-upstream-answers-count-as-failure-118) |
 | [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2) |
 | [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |

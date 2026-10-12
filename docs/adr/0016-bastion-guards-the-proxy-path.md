@@ -35,3 +35,36 @@ likely decide them differently from the library written for this gateway.
   its API cost to use.
 - `sapper`'s fault-injection scenario (RI-06) is the test that the breaker opens,
   sheds and recovers under load; until it exists, the in-repo probe covers it.
+
+## Amendment — which upstream answers count as failure (#118)
+
+The rejected-alternative paragraph above left "what counts as a failure" to
+`bastion`. In practice `bastion` could not decide it for this caller:
+`WithIsFailure` classifies only the error an operation returns, and a reverse
+proxy's `RoundTrip` returns an error only for transport failures. An upstream
+that was up but answering `503` to every request counted as a success on every
+call, so the circuit never opened against the most common way a dependency
+degrades. sapper's fault-injection run (#117) only exercised dropped
+connections, which is why it passed.
+
+**Decision:** `502`, `503` and `504` from the upstream count as failures. A
+`500` does not — it is usually one request's own bug, and opening the circuit
+for it would refuse every request because one endpoint is broken. 4xx never
+counts: it describes the request, not the dependency.
+
+**How:** `breakerRoundTripper` returns an unhealthy answer from inside
+`bastion.Execute` as an error carrying the response, then unwraps it back into
+the response once `Execute` returns. While the circuit is closed the client
+still receives the upstream's own `502`/`503`/`504`, body included; only once
+the threshold is crossed does the gateway answer with its own `503` and
+`Retry-After` (rule 1 above, unchanged).
+
+**The option not taken:** converting an unhealthy answer into the gateway's
+own `502` would have been one line shorter, but it would hide the upstream's
+own status and body from the client even while the dependency is still being
+called — a different response for the same upstream answer, depending only on
+whether a breaker is configured.
+
+Whether `bastion` should offer a result-aware classifier instead of this
+pattern is `bastion#85`; if it does, this mechanism changes, the decision
+above does not.

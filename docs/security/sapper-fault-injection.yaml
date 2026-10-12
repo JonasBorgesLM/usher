@@ -1,0 +1,38 @@
+# Case 4 (sapper's own numbering, ADR-0009 there): inject a dropped
+# connection between usher's gateway and the real resource-server, and
+# assert the gateway's own bastion.Breaker (RI-02, cmd/usher/router.go)
+# opens into a 503+Retry-After and recovers — this issue's (#54) second
+# half, T-17's own GAP in scripts/probe-threats.sh.
+#
+# Operational requirement this scenario carries (ADR-0007 in sapper): the
+# target (usher's gateway) must be configured, OUTSIDE sapper, to send the
+# one dependency's traffic (resource-server) to profile.listen instead of
+# the real address for the run's duration. Here that means usher's own
+# USHER_API_UPSTREAM_URL is temporarily pointed at profile.listen
+# (docs/security/sapper-fault-injection-report.txt's run log shows the
+# exact override) -- sapper cannot arrange this on usher's behalf.
+name: usher-gateway-fault-injection-live-verify
+profile:
+  type: fault-injection
+  baseline_concurrency: 2
+  baseline_duration: 40s
+  concurrency: 3           # the faulted phase's load
+  duration: 20s             # the faulted phase's length
+  upstream: http://localhost:8081   # the real resource-server, reachable from the host
+  listen: 0.0.0.0:19200             # usher's own upstream is pointed here for the run
+  fault_kind: drop   # a real transport failure -- bastion's isFailure only
+                      # sees Go errors (connection refused/reset/EOF), never
+                      # an HTTP status code, so fault_kind: error (a direct
+                      # status response) would never trip usher's breaker
+                      # at all; drop is the one fault_kind that does.
+request:
+  method: GET
+  path: /api/widgets
+  headers:
+    # FR-10: expanded from the environment, never committed as a literal
+    # value. A fresh access_token from the real authorization_code flow,
+    # scope "openid widgets:read" (see the report's own token step).
+    Authorization: "Bearer ${ACCESS_TOKEN}"
+slos:
+  status_seen: 503        # the breaker's own fast-fail status (RI-02 rule 1)
+  recovery_within: 1.5    # post-fault p99 <= pre-fault p99 x 1.5

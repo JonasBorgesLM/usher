@@ -30,17 +30,20 @@ env:
   # directly or transitively, so this is workflow-level rather than
   # per-job.
   GOEXPERIMENT: jsonv2
-  # The floor (ADR-0008). Build and test here.
-  GO_VERSION: "1.26.6"
-  # govulncheck runs on the newest supported toolchain: scanning against a
-  # standard library that no longer gets fixes reports findings nothing here
-  # can resolve.
-  GO_SUPPORTED_VERSION: "stable"
+  # The floor (ADR-0008). Build, test and scan here: govulncheck scans the
+  # toolchain the images ship with, not setup-go's "stable" (ADR-0008's
+  # amendment, #139) -- "stable" lagged a fixed release by hours, and with
+  # GOTOOLCHAIN=local it could not even build a module whose floor was newer.
+  GO_VERSION: "1.27.2"
   # golangci-lint typechecks against the stdlib of the toolchain it was built
   # with and refuses a newer one. This pin and LINT_VERSION move together.
-  LINT_GO_VERSION: "1.26.6"
-  LINT_VERSION: "v2.12.2"
-  GOSEC_VERSION: "v2.28.0"
+  LINT_GO_VERSION: "1.27.2"
+  LINT_VERSION: "v2.14.0"
+  # A commit, not a tag: no gosec release yet reads Go 1.27's export data
+  # (v2.28.0 and v2.29.0 both fail with "export data version 5 is greater
+  # than maximum supported version 4"); master at this commit, on
+  # golang.org/x/tools v0.51.0, does. Back to a tag once one carries it (#139).
+  GOSEC_VERSION: "d2b649ec01825c20bd101ec584e559adb287e578"
   GOVULNCHECK_VERSION: "v1.8.0"
   # Fail rather than silently rewrite go.mod or fetch an unlogged checksum.
   GOFLAGS: -mod=readonly
@@ -52,8 +55,8 @@ jobs:
     name: build & test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
@@ -92,8 +95,8 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.LINT_GO_VERSION }}
           cache-dependency-path: go.mod
@@ -106,7 +109,7 @@ jobs:
 
       # The config is validated even with no code: a schema error found on the
       # first real PR is a red build nobody caused.
-      - uses: golangci/golangci-lint-action@v9
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: ${{ env.LINT_VERSION }}
           install-only: true
@@ -129,10 +132,10 @@ jobs:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_SUPPORTED_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
       - name: govulncheck
         run: |
@@ -152,8 +155,8 @@ jobs:
     name: project guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
@@ -180,8 +183,8 @@ jobs:
     name: integration
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
@@ -211,8 +214,8 @@ jobs:
     name: fuzz
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
@@ -246,8 +249,8 @@ jobs:
     name: README examples run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: go.mod
@@ -274,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: An existing ADR may gain lines, never lose them
@@ -302,7 +305,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Every commit and the PR title follow the convention
@@ -319,8 +322,8 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/dependency-review-action@v5.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           # A new dependency is a design decision (RNF-02), so any known
           # vulnerability fails rather than being triaged later.

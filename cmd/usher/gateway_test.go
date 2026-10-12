@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/JonasBorgesLM/bastion"
 	"github.com/JonasBorgesLM/usher/internal/rbac"
 )
 
@@ -229,5 +232,64 @@ func TestRouteProperties_GatewayRouteIsClassified(t *testing.T) {
 	mux := newRouter(gatewayDeps(t, upstream))
 	if uncovered := unclassifiedRoutes(t, mux); len(uncovered) > 0 {
 		t.Errorf("routes with no routeGroups entry: %v", uncovered)
+	}
+}
+
+// recordingHandler keeps every slog record, for asserting on log output.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
+
+func recordAttrs(r slog.Record) map[string]string {
+	attrs := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.String()
+		return true
+	})
+	return attrs
+}
+
+// TestGatewayBreaker_LogsEachTransitionOnce is #128's other half: with
+// per-request rejections no longer logged by internal/proxy, the circuit
+// opening and closing must still be visible — once per transition, with
+// the states as text rather than bastion's integer State type.
+//
+// Negative control: with the logger.Log call removed from
+// newGatewayBreaker's OnStateChange hook, this test failed — 0 records for
+// a trip and a reset. Verified by hand, restored before committing.
+func TestGatewayBreaker_LogsEachTransitionOnce(t *testing.T) {
+	logs := &recordingHandler{}
+	breaker, err := newGatewayBreaker(slog.New(logs))
+	if err != nil {
+		t.Fatalf("newGatewayBreaker: %v", err)
+	}
+	ctx := context.Background()
+
+	breaker.Trip(ctx)
+	for range 10 { // refused calls while open add nothing
+		_, _ = bastion.Execute(ctx, breaker, func(context.Context) (struct{}, error) { return struct{}{}, nil })
+	}
+	breaker.Reset(ctx)
+
+	if len(logs.records) != 2 {
+		t.Fatalf("%d records, want exactly 2 (open, then closed)", len(logs.records))
+	}
+	opened, closed := logs.records[0], logs.records[1]
+	if opened.Level != slog.LevelWarn || recordAttrs(opened)["to"] != "open" {
+		t.Errorf("first record = %s %v, want WARN to=open", opened.Level, recordAttrs(opened))
+	}
+	if closed.Level != slog.LevelInfo || recordAttrs(closed)["to"] != "closed" {
+		t.Errorf("second record = %s %v, want INFO to=closed", closed.Level, recordAttrs(closed))
 	}
 }

@@ -39,10 +39,12 @@
 # cmd/usher/main.go -- there was no live /api/** route to probe against.
 # #104 (filed from that finding) wired it in; T-08 and T-13 below now
 # probe the real /api/** route directly, alongside the resource server's
-# own independent defense (RS-18/RI-04) each already had. T-17 is still a
-# GAP: it needs the upstream to actually fail, which a black-box HTTP
-# probe cannot induce without stopping or breaking the compose stack's
-# own resource-server container -- see probe_t17's own comment.
+# own independent defense (RS-18/RI-04) each already had. T-17 stays a GAP
+# in THIS script -- it needs the upstream to actually fail, which a single
+# sequential black-box HTTP probe cannot induce -- but it is no longer an
+# open question: sapper's fault-injection scenario (#54) verified it
+# separately against the real stack; see probe_t17's own comment and
+# docs/security/sapper-fault-injection-report.txt.
 
 set -uo pipefail
 
@@ -572,7 +574,7 @@ probe_t14() {
 # --- T-17/T-18/T-19: not probeable from outside, by design or by #104 ----------
 probe_t17() {
   header "T-17 -- upstream failure cascading into the gateway, or leaking through it (RS-20, RS-21, RI-02)"
-  gap "#104 wired the gateway's own /api/** route in, but this threat needs the upstream to actually fail -- a black-box HTTP probe cannot induce that without stopping or breaking the compose stack's own resource-server container, which is a different, more invasive kind of probe than this script runs. sapper's own fault injector (found while working #54) has no CLI-driven scenario yet either -- see #54's own report for the exact citation."
+  gap "this threat needs the upstream to actually fail, which a single sequential black-box HTTP script cannot induce without a second, correlated traffic stream and the target reconfigured for the run's duration -- a different, more invasive kind of probe than this script runs request-by-request. It IS verified, separately: sapper's fault-injection scenario (sapper/#53, ADR-0009 there) dropped a real connection between usher's gateway and the real resource-server and confirmed bastion.Breaker opens into 503+Retry-After (RI-02 rule 1), recovers, and the gateway never leaks upstream detail on the plain 502 either side of it (RS-20) -- see docs/security/sapper-fault-injection-report.txt and its committed result.json for the full run."
 }
 
 probe_t18() {

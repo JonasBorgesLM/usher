@@ -13,10 +13,10 @@ this is a single-maintainer project, and a freeze exists to protect against
 other people's concurrent merges, which do not happen here. What actually
 matters:
 
-- The release commit is the **last** thing merged into `develop` before the
-  tag. Do not tag a commit on `main` that `develop` has already moved past —
-  the merge-back step below would then have something real to reconcile,
-  instead of being the no-op it is every other time.
+- The release PR (`develop` → `main`, below) is opened from the `develop`
+  commit that was verified. Anything merged into `develop` after it is opened
+  waits for the next release — either close and reopen the PR, or let it
+  ride; never tag a `main` commit whose contents were not the ones verified.
 - REQUIREMENTS §13's own MVP acceptance is re-verified **on the commit being
   tagged**, not on a memory of when it last passed. §10's test suite,
   `scripts/probe-threats.sh`, and the `warden`/`sapper` reports under
@@ -35,55 +35,61 @@ alone creates a lightweight, unsigned tag silently).
 Verify a tag signed correctly after creating it:
 
 ```bash
-git tag -v v0.1.0
+git tag -v vX.Y.Z
 ```
 
 ## The `develop` → `main` merge
 
-CONTRIBUTING.md's Git flow section already covers the steady state: every
-merge into `develop` is immediately fast-forwarded into `main`, so by the
-time a release is cut, **`main` already equals `develop`** — there is no
-separate "merge develop into main" step left to perform. The tag is cut
-directly on `main` at that shared commit:
+`main` holds released states only (CONTRIBUTING.md). Both branches require a
+pull request and the `CI OK` check, so a release is a pull request too:
+
+```bash
+gh pr create --base main --head develop --title "chore: release vX.Y.Z" \
+  --body "Release vX.Y.Z. Verified on <develop sha>: <what was re-run>."
+```
+
+Merge it with a **merge commit**, not a squash: the commits on `develop` are
+each one subject, and a squash would leave `main` with history `develop` does
+not share. Then tag the merge commit:
 
 ```bash
 git checkout main
 git pull --ff-only origin main
-git tag -a v0.1.0 -m "v0.1.0 — $(date -u +%Y-%m-%d): MVP acceptance (REQUIREMENTS §13) met"
-git push origin v0.1.0
+git tag -a vX.Y.Z -m "vX.Y.Z — $(date -u +%Y-%m-%d): <one line on what it carries>"
+git tag -v vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-If `main` and `develop` have ever diverged by the time this is read, that is
-itself a defect in the fast-forward discipline — fix `main` first (fast-
-forward it to `develop`, or find out why it cannot be) rather than tagging a
-commit `develop` has moved past.
+**How `v0.1.0` was different, kept so the history reads correctly:** until the
+first tag, `main` was fast-forwarded to `develop` after every merge, so
+`v0.1.0` was tagged on a commit both branches already shared, with no release
+PR. That rule ended at `v0.1.0`; the commits merged into `develop` after it
+(#116 among them) only reach `main` through the next release PR.
 
 ## The merge back
 
-CONTRIBUTING.md's own reasoning: release commits edit the files a release
-exists to change (this document's own future edits, `SECURITY.md`'s
-"Supported versions" line below, a version string if one is ever added), and
-without merging back, `develop` and `main` diverge in exactly those files.
+The release merge commit exists only on `main`, but its tree is exactly
+`develop`'s at that commit — there is nothing in it to bring back. So right
+after tagging, the merge back is a check, not an operation:
 
-Because this project fast-forwards `main` from `develop` on every merge
-rather than merging `develop` into `main` as a merge commit, **the tag itself
-is the only thing `main` ever has that `develop` does not** — a tag is a ref,
-not a commit, so there is nothing for `develop` to merge back. The step still
-exists for the day a hotfix lands directly on `main` (which this project's
-own flow does not do today, but a future one might): that commit, and only
-that one, gets merged back into `develop` before the next release. Record
-here, not re-derive each time: as of `v0.1.0`, this has never happened, and
-the "merge back" is a check (`git merge-base --is-ancestor main develop`)
-confirming it remains unnecessary, not an operation.
+```bash
+git fetch origin
+git diff --stat origin/develop origin/main   # empty: nothing to merge back
+```
+
+It stops being empty only if something was committed to `main` directly (a
+hotfix, which this flow does not do today). In that case, open a PR from
+`main` into `develop` for exactly those commits before anything else merges
+into `develop`.
 
 ## After tagging
 
-- Update `SECURITY.md`'s "Supported versions" section: `v0.1.0` is now the
-  latest tag receiving fixes.
-- `gh release create v0.1.0 --title v0.1.0 --generate-notes` — a GitHub
-  Release is not what `#55`'s own done-when requires (that is the tag
-  alone), but a tag with no release page is easy to miss from the repository
-  front page.
+- `SECURITY.md`'s "Supported versions" line says "the latest tag receives
+  fixes" and needs no edit per release; check it still reads true.
+- `gh release create vX.Y.Z --title vX.Y.Z --generate-notes` — a tag with no
+  release page is easy to miss from the repository front page.
+- Close the milestones the release completes, so the open ones are only
+  work still to do.
 - Confirm private vulnerability reporting is still on (`Settings → Security
   → Private vulnerability reporting`, or
   `gh api repos/<owner>/<repo>/private-vulnerability-reporting`) — `SECURITY.md`
