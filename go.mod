@@ -8,7 +8,7 @@ module github.com/JonasBorgesLM/usher
 go 1.27.2
 
 require (
-	github.com/JonasBorgesLM/bastion v0.2.1
+	github.com/JonasBorgesLM/bastion v0.3.0
 	github.com/JonasBorgesLM/moat v0.2.0
 	github.com/JonasBorgesLM/moat/redisstore v0.2.2
 	github.com/go-chi/chi/v5 v5.3.2

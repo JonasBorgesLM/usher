@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1160,5 +1161,69 @@ func TestNewHandler_UpstreamFailureStillLogged(t *testing.T) {
 	}
 	if got := logs.count(slog.LevelError); got != 1 {
 		t.Errorf("%d ERROR records for one failed upstream call, want 1", got)
+	}
+}
+
+// TestRetryAfterSeconds pins ADR-0016 rule 1's arithmetic now that bastion
+// exposes the open timeout (v0.3.0): whole seconds to Half-Open, rounded up,
+// never below 1.
+func TestRetryAfterSeconds(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	open := func(openedAgo time.Duration) bastion.Counts {
+		return bastion.Counts{State: bastion.StateOpen, OpenedAt: now.Add(-openedAgo), OpenTimeout: 5 * time.Second}
+	}
+	cases := []struct {
+		name string
+		c    bastion.Counts
+		want int
+	}{
+		{"just opened", open(0), 5},
+		{"2.3 s in: 2.7 s left, rounded up", open(2300 * time.Millisecond), 3},
+		{"1 ns left: never 0", open(5*time.Second - time.Nanosecond), 1},
+		{"timeout already elapsed in this snapshot", open(9 * time.Second), 1},
+		{"manual trip: no deadline, the timeout as a hint", bastion.Counts{State: bastion.StateOpen, Manual: true, OpenTimeout: 30 * time.Second}, 30},
+		{"half-open: a probe is in flight", bastion.Counts{State: bastion.StateHalfOpen, OpenTimeout: 5 * time.Second}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryAfterSeconds(tc.c, now); got != tc.want {
+				t.Errorf("retryAfterSeconds() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNewHandler_RetryAfterTracksTheBreakersOpenTimeout: through the real
+// handler, an evidence-opened circuit with a 5 s open timeout answers a
+// Retry-After within it, not the 30 s usher used to hard-code.
+//
+// Negative control: with the header set back to a constant 30, this test
+// failed — Retry-After was 30 for a 5 s open timeout. Verified by hand,
+// restored before committing.
+func TestNewHandler_RetryAfterTracksTheBreakersOpenTimeout(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	upstream, _ := countingUpstream(t, http.StatusServiceUnavailable)
+	breaker, err := bastion.New("test-retry-after", bastion.WithFailureThreshold(1), bastion.WithOpenTimeout(5*time.Second))
+	if err != nil {
+		t.Fatalf("bastion.New: %v", err)
+	}
+	route := testRoute(t, upstream)
+	route.Breaker = breaker
+	handler := NewHandler(route, testValidator(t, priv), newFakeDenylist(), nil, nil, nil)
+	token := testAccessToken(t, priv, "jti-retry-after", []string{"openid"})
+
+	handler.ServeHTTP(httptest.NewRecorder(), proxyRequest("Bearer "+token, nil)) // opens it
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want the open circuit's 503", rec.Code)
+	}
+	got, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil {
+		t.Fatalf("Retry-After %q is not whole seconds: %v", rec.Header().Get("Retry-After"), err)
+	}
+	if got < 1 || got > 5 {
+		t.Errorf("Retry-After = %d, want within the breaker's 5 s open timeout", got)
 	}
 }

@@ -68,3 +68,20 @@ whether a breaker is configured.
 Whether `bastion` should offer a result-aware classifier instead of this
 pattern is `bastion#85`; if it does, this mechanism changes, the decision
 above does not.
+
+## Amendment — Retry-After from the breaker's own state (bastion v0.3.0)
+
+Rule 1 was half-answered: the `503` carried `Retry-After: 30`, a constant,
+because `bastion.Counts` exposed `OpenedAt` but not the configured open timeout.
+usher reported that cost back (#123 → bastion#84), and bastion v0.3.0 added
+`Counts.OpenTimeout`. usher now pins v0.3.0. `Retry-After` is the whole seconds
+until `OpenedAt + OpenTimeout`, the instant the circuit goes Half-Open, rounded
+up and never below 1. A manual trip has no deadline, so it gets the configured
+timeout as a conservative hint. A Half-Open rejection (`ErrTooManyRequests`)
+means a probe is in flight, so it gets 1.
+
+The other report, bastion#85, was settled as a documented pattern rather than
+an API (bastion/ADR-0021): classifying a bad result is the operation's job.
+That is the mechanism `breakerRoundTripper` already uses for 502/503/504 (the
+amendment above), so the mechanism stands as written; the earlier caveat that
+it might change with bastion#85 no longer applies.
