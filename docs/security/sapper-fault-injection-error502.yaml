@@ -28,4 +28,11 @@ request:
     Authorization: "Bearer ${ACCESS_TOKEN}"
 slos:
   status_seen: 503        # the breaker's own fast-fail status (RI-02 rule 1)
-  recovery_within: 1.5    # post-fault p99 <= pre-fault p99 x 1.5
+  # 3.0, not 1.5 (#145): post/pre p99 ratios measured 0.63-1.92 in BOTH
+  # fault kinds at a ~3-6 ms baseline on Docker Desktop, from latency spikes
+  # present in every phase -- 1.5 sat inside the noise and failed at random.
+  # What this does NOT cover: a breaker that never closes again answers fast
+  # 503s, which LOWERS the after-phase p99, so it passes this SLO and
+  # status_seen alike. That gap needs an after-phase status SLO in sapper
+  # (sapper#57); until then "it recovers" rests on internal/proxy's unit tests.
+  recovery_within: 3.0    # coarse guard: a gross post-fault slowdown only
