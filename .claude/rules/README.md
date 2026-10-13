@@ -1,7 +1,9 @@
 # Generic rules
 
-Empty on purpose, and this file explains why rather than leaving a bare
-directory.
+The generic set is empty on purpose, and this file explains why rather than
+leaving a bare directory. What is here is usher's own: `k8s-deploy.md`
+(ADR-0022) states the load-bearing settings of `k8s/` next to the files they
+constrain.
 
 Path-scoped rules load automatically when a matching file is touched, so they
 are the right place for an invariant stated **close to the code it constrains**.
