@@ -37,7 +37,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
 | [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
-| [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151) |
+| [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151), [Amendment (implemented)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--implemented-152-153-154) |
 
 ## Reopening criteria on the record
 

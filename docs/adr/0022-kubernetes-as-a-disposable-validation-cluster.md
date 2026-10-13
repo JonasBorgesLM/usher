@@ -162,3 +162,43 @@ precondition for the next:
    that the target cluster enforces NetworkPolicy before anything trusts the
    pod CIDR (decision 3).
 
+
+## Amendment — implemented (#152, #153, #154)
+
+All three steps landed, in order: non-root images (#152), the rules file
+(#153), and `k8s/` with its rollout test (#154). Nothing above is
+superseded. Implementing the decisions settled three details they left open,
+and one statement in the rules file had to be corrected:
+
+- **The resource server fetches the JWKS through the ingress**, not from
+  usher's Service. Decision 3 admits only the ingress controller to usher's
+  pods; a direct fetch would have needed a second allowed source, from inside
+  the trusted CIDR. The Ingress has no host rule, so any request reaching
+  Traefik goes to usher.
+- **The keyset Secret is mounted `0440` with `fsGroup: 65532`.** `keys.Load`
+  already skips the Secret volume's `..data` entries and follows its
+  per-file symlinks, so decision 4 needed no code change. The compose stack
+  needed one: `genkeys` writes `0600` as root, and the keys volume is now
+  chowned to 65532. Without it, usher exits at startup with
+  `permission denied`.
+- **What the trusted CIDR governs is `X-Forwarded-For` only**, meaning the IP
+  axis of RS-22 and the logs. The rules file first also named `X-Auth-*`,
+  which was wrong: usher strips inbound `X-Auth-*` (RS-17), and the resource
+  server reads none. #154 corrected it.
+
+Measured on k3d (`k8s/rollout-test.sh`):
+
+| Check | Result |
+| --- | --- |
+| NetworkPolicy, a pod that is neither Traefik nor usher | reaches usher through the ingress (200), and reaches neither usher nor the resource server directly |
+| The same check with both policies deleted | fails: both reached directly (200) |
+| Rolling restart of both Deployments under load, two runs | 12328/12328 and 12750/12750 answered 200 |
+| The same rollout with `preStop` removed | 9 of 13403 lost (8 × 502, 1 with no answer) |
+
+Decision 6's `preStop` delay is therefore measured, not assumed. k3s's
+policy controller lets kubelet probes through to pods under these policies,
+so the probes needed no extra rule.
+
+The rollout test does not run in CI, because the pipeline has no cluster.
+It is a manual check, run when the shutdown path, the probes, the rollout
+strategy or a NetworkPolicy changes (`.claude/rules/k8s-deploy.md`).
