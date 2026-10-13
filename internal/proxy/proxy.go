@@ -172,17 +172,35 @@ func gatewayErrorHandler(w http.ResponseWriter, _ *http.Request, _ error) {
 	w.WriteHeader(http.StatusBadGateway)
 }
 
-// breakerRetryAfterSeconds is ADR-0016's own rule 1 half-answered: a
-// static, conservative Retry-After, not one derived from the breaker's
-// own configured WithOpenTimeout. bastion.Breaker exposes Counts (state,
-// OpenedAt) but not the open-timeout duration itself, and Counts.OpenedAt
-// is zero for StateHalfOpen's own rejection (ErrTooManyRequests) in any
-// case — there is no value to compute an exact remaining wait from for
-// that one. Per ADR-0016's own charge ("usher becomes bastion's first
-// real integration and should report back what its API cost to use"),
-// this gap is the finding: a real caller wanting a precise Retry-After
-// needs bastion to expose the configured timeout, which it does not yet.
-const breakerRetryAfterSeconds = 30
+// retryAfterSeconds is ADR-0016's rule 1 answered from the breaker's own
+// state: the whole seconds until the circuit goes Half-Open and admits its
+// next probe — OpenedAt plus the configured open timeout, which bastion
+// exposes in Counts since v0.3.0 (bastion#84, reported from #123) — rounded
+// up and never below 1, since "retry in 0 seconds" invites exactly the
+// immediate retry the breaker exists to stop.
+//
+// A manual trip (bastion/ADR-0017) has no timeout, so it gets the configured
+// open timeout as a conservative hint. A Half-Open rejection
+// (ErrTooManyRequests) means a probe is already in flight and its outcome is
+// moments away, so 1 second.
+func retryAfterSeconds(c bastion.Counts, now time.Time) int {
+	switch {
+	case c.State == bastion.StateOpen && c.Manual:
+		return ceilSeconds(c.OpenTimeout)
+	case c.State == bastion.StateOpen && !c.OpenedAt.IsZero():
+		return ceilSeconds(c.OpenedAt.Add(c.OpenTimeout).Sub(now))
+	default:
+		return 1
+	}
+}
+
+func ceilSeconds(d time.Duration) int {
+	s := int((d + time.Second - 1) / time.Second)
+	if s < 1 {
+		return 1
+	}
+	return s
+}
 
 // breakerRoundTripper wraps an http.RoundTripper in one *bastion.Breaker
 // (ADR-0016: "one named breaker per upstream, wrapping the outbound
@@ -206,7 +224,8 @@ type breakerRoundTripper struct {
 // count as healthy forever. An unhealthy answer is therefore carried out
 // of Execute as an error (so it counts against the threshold) and unwrapped
 // back into the response here, so the client still receives the upstream's
-// own answer while the circuit is closed (ADR-0016's amendment).
+// own answer while the circuit is closed (ADR-0016's amendment). This is
+// the pattern bastion documents for exactly this case (bastion/ADR-0021).
 func (rt *breakerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := bastion.Execute(req.Context(), rt.breaker, func(ctx context.Context) (*http.Response, error) {
 		resp, err := rt.next.RoundTrip(req)
@@ -331,7 +350,7 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 			// down. The transition itself is logged once, by the
 			// breaker's own OnStateChange hook (cmd/usher/router.go).
 			if errors.Is(err, bastion.ErrOpenState) || errors.Is(err, bastion.ErrTooManyRequests) {
-				w.Header().Set("Retry-After", strconv.Itoa(breakerRetryAfterSeconds))
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(route.Breaker.Counts(), time.Now())))
 				w.WriteHeader(http.StatusServiceUnavailable)
 				return
 			}

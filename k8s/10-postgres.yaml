@@ -1,0 +1,66 @@
+# Postgres for the validation cluster.
+#
+# NOT a production database. Storage is an emptyDir, so the data is gone
+# when the pod is: deliberate for a cluster whose job is to prove a
+# rollout, and data loss anywhere else. Refresh families live here
+# (ADR-0002), so a real deployment would need durable storage before
+# anything else on this list.
+#
+# The password comes from the usher-secrets Secret that k8s/up.sh
+# generates; it is never written in this repository.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: usher
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: usher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: usher
+            - name: POSTGRES_DB
+              value: usher
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: usher-secrets
+                  key: POSTGRES_PASSWORD
+            # initdb refuses a non-empty data directory, and the mount
+            # point is not guaranteed empty; a subdirectory sidesteps it.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "usher", "-d", "usher"]
+            periodSeconds: 2
+      volumes:
+        - name: data
+          emptyDir: {}

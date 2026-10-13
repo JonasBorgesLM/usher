@@ -71,7 +71,11 @@ services:
       context: .
       dockerfile: Dockerfile.usher
       target: build
-    entrypoint: ["go", "run", "./cmd/genkeys"]
+    # genkeys runs as root (the volume is root-owned when Docker creates it)
+    # and writes 0600 files; usher runs as UID 65532 (ADR-0022), so the
+    # keyset is handed to that UID afterwards. On every run, which also
+    # fixes a volume created before the images went non-root.
+    entrypoint: ["sh", "-c", "go run ./cmd/genkeys && chown -R 65532:65532 /keys"]
     working_dir: /src
     environment:
       USHER_DATABASE_URL: postgres://${POSTGRES_USER:-usher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-usher}

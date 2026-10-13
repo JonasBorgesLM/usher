@@ -4,8 +4,8 @@ github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 h1:He8af
 github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6/go.mod h1:8o94RPi1/7XTJvwPpRSzSUedZrtlirdB3r9Z20bi2f8=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
-github.com/JonasBorgesLM/bastion v0.2.1 h1:tAaYQAEX89mmrti3CvbKjBZwQreMYCoVcUV2+x3AkqI=
-github.com/JonasBorgesLM/bastion v0.2.1/go.mod h1:NSB+LQnNjX/uTr3naA5Mclv7CULXuO9/9Wdylu4KzXE=
+github.com/JonasBorgesLM/bastion v0.3.0 h1:z8KhFsRyYe6GQCcATtTMMGZl1Pj1+SCG96ZQd1lBnVM=
+github.com/JonasBorgesLM/bastion v0.3.0/go.mod h1:NSB+LQnNjX/uTr3naA5Mclv7CULXuO9/9Wdylu4KzXE=
 github.com/JonasBorgesLM/moat v0.2.0 h1:4GWDJInGeIgLmdeUxzK2ckUT1WBBhffWyoZP5hSW0v0=
 github.com/JonasBorgesLM/moat v0.2.0/go.mod h1:65xs3itYF+S7xsAZ32o0N7FvZj1564SDquOvmE2nD0o=
 github.com/JonasBorgesLM/moat/redisstore v0.2.2 h1:WzTF/vOMiGYXUm4ZzDJG0TymRdVoCKQonWWwjufOgHM=

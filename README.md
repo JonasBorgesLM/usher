@@ -113,6 +113,15 @@ through `/authorize` → login → consent → `/token` → the demo resource se
 that is `cmd/usher`'s own router, exercised manually or by a future `warden`/
 `sapper` run (RI-06), not something this command does for you.
 
+`k8s/` runs the same stack on a local k3d cluster, as a disposable validation
+cluster rather than a deployment
+([ADR-0022](docs/adr/0022-kubernetes-as-a-disposable-validation-cluster.md)):
+two usher replicas behind Traefik, with NetworkPolicies as part of the
+trusted-proxy configuration. `./k8s/up.sh` brings it up and seeds it, and
+`./k8s/rollout-test.sh` checks that the policies are enforced, then
+measures a rolling restart under load. What must not change silently is in
+[`.claude/rules/k8s-deploy.md`](.claude/rules/k8s-deploy.md).
+
 ## Testing
 
 ```bash

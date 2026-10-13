@@ -1,0 +1,6 @@
+# usher's disposable validation cluster (ADR-0022). Not a production
+# deployment: see .claude/rules/k8s-deploy.md before changing anything here.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: usher

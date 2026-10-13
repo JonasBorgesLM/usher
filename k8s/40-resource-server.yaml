@@ -1,0 +1,114 @@
+# The demo resource server (ADR-0007, ADR-0013): a small upstream that
+# re-validates every token itself against usher's published JWKS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: resource-server
+  namespace: usher
+spec:
+  selector:
+    app: resource-server
+  ports:
+    - port: 8081
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: resource-server
+  namespace: usher
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: resource-server
+  template:
+    metadata:
+      labels:
+        app: resource-server
+    spec:
+      # 30 > preStop sleep (5) + shutdownTimeout (10,
+      # cmd/resource-server/main.go) + headroom.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      containers:
+        - name: resource-server
+          image: resource-server:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8081
+          env:
+            - name: RESOURCE_SERVER_ADDR
+              value: ":8081"
+            # Through the ingress, not usher's Service: usher's
+            # NetworkPolicy admits only the ingress controller, and the
+            # JWKS is public anyway. A direct route would need a second
+            # allowed source, from a pod inside the trusted CIDR.
+            - name: RESOURCE_SERVER_JWKS_URL
+              value: "http://traefik.kube-system.svc.cluster.local/.well-known/jwks.json"
+            - name: RESOURCE_SERVER_ISSUER
+              value: "http://localhost:18080"
+            - name: RESOURCE_SERVER_AUDIENCE
+              value: "https://resource-server.usher.local"
+            # The pod CIDR, made narrow by the NetworkPolicy below, which
+            # admits only usher's pods (ADR-0022 decision 3).
+            - name: RESOURCE_SERVER_TRUSTED_PROXY_CIDRS
+              value: "10.42.0.0/16"
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          # The resource server has no dependency to check at startup and
+          # only /healthz, so it serves as both readiness and liveness.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+# Part of the trust configuration, as usher's own policy is: the resource
+# server trusts X-Forwarded-For from the whole pod CIDR, and this narrows
+# that to usher's pods. (It reads no X-Auth-* header at all; it
+# re-validates the token itself.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: resource-server-ingress-only-from-usher
+  namespace: usher
+spec:
+  podSelector:
+    matchLabels:
+      app: resource-server
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: usher
+      ports:
+        - port: 8081

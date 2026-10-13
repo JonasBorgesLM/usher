@@ -28,4 +28,19 @@ request:
     Authorization: "Bearer ${ACCESS_TOKEN}"
 slos:
   status_seen: 503        # the breaker's own fast-fail status (RI-02 rule 1)
-  recovery_within: 1.5    # post-fault p99 <= pre-fault p99 x 1.5
+  # "It recovers" (RI-02): the after-phase is serving 200 again. A breaker
+  # stuck open scores 0% and fails; it is the one SLO here that catches that
+  # (sapper#57, #145). The fraction counts REQUESTS, not time: the after-phase
+  # starts with the breaker still open (10 s of 40 s), and its 503s are ~10x
+  # faster than real 200s, so they are over-counted -- five runs measured
+  # 54.9-58.3% for a phase that is ~75% healthy by time. 0.2 leaves that
+  # margin; 0.5 sat right on it.
+  recovered_status:
+    status: 200
+    min_fraction: 0.2
+  # 3.0, not 1.5 (#145): post/pre p99 ratios measured 0.63-1.92 in BOTH
+  # fault kinds at a ~3-6 ms baseline on Docker Desktop, from latency spikes
+  # present in every phase -- 1.5 sat inside the noise and failed at random.
+  # Latency only: a breaker stuck open answers fast 503s and would pass this;
+  # recovered_status above is what catches that.
+  recovery_within: 3.0    # coarse guard: a gross post-fault slowdown only
