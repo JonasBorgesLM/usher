@@ -1,7 +1,8 @@
 # ADR-0022: usher runs on Kubernetes as a disposable validation cluster, still one binary
 
 ## Status
-Proposed
+Proposed — 2026-10-12
+Accepted — 2026-10-12, as proposed; the order of work is in the Amendment below (#151)
 
 ## Context
 The question came after v0.1.1: should usher become a set of microservices run
@@ -143,3 +144,21 @@ not validate it.
 - **Shared breaker state:** a measured case where per-replica breakers sent
   more load to a failing upstream than it could absorb.
 - **Production frame:** a change to REQUIREMENTS §1.1 itself.
+
+## Amendment — accepted (#151)
+
+Accepted as proposed; nothing above is narrowed or superseded. The work lands
+in this order, each step in its own pull request, because each is a
+precondition for the next:
+
+1. **Non-root images** (decision 7): `USER 65532` in both Dockerfiles, with the
+   compose stack and the README examples still passing. This matters for the
+   compose stack too, not only for Kubernetes.
+2. **`.claude/rules/k8s-deploy.md`**: the load-bearing settings and their
+   arithmetic (decision 6's shutdown budget, the probe split, and decision 3's
+   rule that the NetworkPolicy is part of the trust configuration), stated next
+   to the files they constrain, as task-api's equivalent does.
+3. **`k8s/` manifests and a rollout test on k3d**, the first of which verifies
+   that the target cluster enforces NetworkPolicy before anything trusts the
+   pod CIDR (decision 3).
+
