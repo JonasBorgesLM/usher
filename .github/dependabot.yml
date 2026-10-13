@@ -4,6 +4,9 @@ version: 2
 updates:
   - package-ecosystem: gomod
     directory: /
+    # PRs target develop (CONTRIBUTING.md): main changes only through a
+    # release PR, so a bump opened against main could never be merged.
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -30,6 +33,7 @@ updates:
   # alpine:3.20 past its end of support (2026-04-01) without anything noticing.
   - package-ecosystem: docker
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
@@ -43,6 +47,7 @@ updates:
   # supply-chain change and gets the same review as a code dependency.
   - package-ecosystem: github-actions
     directory: /
+    target-branch: develop
     schedule:
       interval: weekly
       day: monday
