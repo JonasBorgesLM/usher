@@ -26,7 +26,8 @@ single fixed address. Two NetworkPolicies make that range safe to trust:
 - ingress to the resource server's pods **only** from usher's pods.
 
 Deleting, loosening, or relabelling around either policy **widens who can
-forge `X-Forwarded-For` and `X-Auth-*`**. Nothing fails when that happens:
+forge `X-Forwarded-For`**, which is the client IP behind usher's rate-limit
+IP axis (RS-22) and both services' logs. Nothing fails when that happens:
 every probe, every test and every rollout stays green. Change a policy, a pod
 label it selects on, or either CIDR only together with the others.
 

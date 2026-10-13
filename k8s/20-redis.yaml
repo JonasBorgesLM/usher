@@ -1,0 +1,61 @@
+# Redis for the validation cluster: sessions, challenges, codes, the
+# gateway denylist and rate-limit buckets (ADR-0003, ADR-0014). Only state
+# whose loss fails safe lives here, so an emptyDir is the right shape even
+# outside a disposable cluster.
+#
+# --maxmemory-policy noeviction is explicit, not assumed (RNF-07), and this
+# self-hosted Redis allows CONFIG GET, which usher's startup EvictionCheck
+# needs: usher refuses to start without verifying it (ADR-0003).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: usher
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: usher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # A shell wrapper so the password comes from the Secret through
+          # the environment rather than as a literal in this file.
+          command: ["/bin/sh", "-c"]
+          args:
+            - exec redis-server --maxmemory-policy noeviction --requirepass "$REDIS_PASSWORD"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: usher-secrets
+                  key: REDIS_PASSWORD
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping"]
+            periodSeconds: 2
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

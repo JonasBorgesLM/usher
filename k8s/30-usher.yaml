@@ -1,0 +1,219 @@
+# usher: the authorization server and the gateway, one binary (ADR-0001,
+# ADR-0022 decision 2), behind k3s's Traefik ingress controller.
+#
+# The load-bearing settings, and why each one is load-bearing, are in
+# .claude/rules/k8s-deploy.md. The two that break silently are the
+# NetworkPolicy at the bottom of this file and the shutdown arithmetic on
+# terminationGracePeriodSeconds.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: usher-config
+  namespace: usher
+data:
+  USHER_ADDR: ":8080"
+  # The address the host reaches the ingress at (k3d's port mapping in
+  # k8s/up.sh). It is also what moat's CSRF Origin check and every
+  # token's `iss` are compared against, so it must be the URL a browser
+  # (or scripts/dev-access-token.sh) actually uses.
+  USHER_ISSUER: "http://localhost:18080"
+  USHER_REDIS_ADDR: "redis:6379"
+  USHER_CLIENTS_PATH: /etc/usher/clients.json
+  USHER_KEYS_DIR: /keys
+  # ADR-0022 decision 3: the pod CIDR (k3s default), because the ingress
+  # controller's pod IP changes on every reschedule. This range is sound
+  # ONLY because of the NetworkPolicy below, which admits nothing but the
+  # ingress controller. Never 0.0.0.0/0 (ADR-0010).
+  USHER_TRUSTED_PROXY_CIDRS: "10.42.0.0/16"
+  USHER_API_UPSTREAM_URL: "http://resource-server:8081"
+  USHER_API_UPSTREAM_AUDIENCE: "https://resource-server.usher.local"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: usher
+  namespace: usher
+spec:
+  selector:
+    app: usher
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# No host rule: every request reaching the ingress goes to usher. That is
+# also what lets the resource server fetch the JWKS through the ingress
+# (40-resource-server.yaml) instead of needing a hole in the
+# NetworkPolicy below.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: usher
+  namespace: usher
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: usher
+                port:
+                  number: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usher
+  namespace: usher
+spec:
+  # Two replicas share everything through Postgres and Redis (ADR-0022's
+  # table). The bastion breaker is the exception: it is per replica, so a
+  # failed upstream sees up to 2 × the threshold before both open
+  # (decision 8, accepted).
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # A pair: maxUnavailable 0 forbids removing an old pod before a new
+      # one is Ready, and maxSurge 1 is what lets the new one start.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: usher
+  template:
+    metadata:
+      labels:
+        app: usher
+    spec:
+      # 30 > preStop sleep (5) + shutdownDrainDeadline (10, cmd/usher/main.go)
+      # + headroom for the request in flight. Raising either number
+      # without raising this one drops requests during a rollout, silently.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # The image runs as USER 65532 (ADR-0022 decision 7); runAsNonRoot
+        # can verify it only because the UID is numeric. fsGroup is what
+        # makes the keyset Secret below readable by that user.
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: usher
+          image: usher:dev
+          # Side-loaded with `k3d image import`; there is no registry.
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: usher-config
+          env:
+            - name: USHER_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: usher-secrets
+                  key: USHER_DATABASE_URL
+            - name: USHER_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: usher-secrets
+                  key: REDIS_PASSWORD
+            - name: USHER_CSRF_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: usher-secrets
+                  key: USHER_CSRF_SECRET
+          lifecycle:
+            preStop:
+              # usher starts draining the instant SIGTERM arrives, while
+              # its endpoint is still leaving the Service. This sleep
+              # keeps it serving through that window. It runs `sleep`
+              # from the alpine image; a scratch image would need the
+              # native sleep action instead.
+              exec:
+                command: ["sleep", "5"]
+          # Migration (advisory lock, ADR-0018), the Redis eviction check
+          # and the keyset load all run before usher listens, so
+          # connections are refused until then. This probe owns that
+          # window, so liveness never kills a pod mid-migration.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 60
+          # Readiness: Postgres, Redis, and a signing key valid now
+          # (RNF-10). A Redis blip takes the pod out of rotation...
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 2
+            failureThreshold: 2
+          # ...and does not restart it: liveness checks no dependency.
+          # Never swap these two routes.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+            - name: clients
+              mountPath: /etc/usher
+              readOnly: true
+      volumes:
+        # ADR-0022 decision 4. usher reads the keyset once, at startup:
+        # rotating means adding the next key here with a future sign_from,
+        # then `kubectl rollout restart`. Updating the Secret alone
+        # changes nothing.
+        - name: keys
+          secret:
+            secretName: usher-keys
+            defaultMode: 0440
+        - name: clients
+          configMap:
+            name: usher-clients
+---
+# ADR-0022 decision 3. This policy is part of the trust configuration,
+# not hardening on top of it: USHER_TRUSTED_PROXY_CIDRS trusts the whole
+# pod CIDR, and this is what narrows "any pod" to "the ingress controller".
+# Loosen it and any pod can forge X-Forwarded-For, with nothing failing.
+# k8s/rollout-test.sh verifies it is enforced before measuring anything.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: usher-ingress-only-from-traefik
+  namespace: usher
+spec:
+  podSelector:
+    matchLabels:
+      app: usher
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - port: 8080
