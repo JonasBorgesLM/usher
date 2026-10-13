@@ -21,5 +21,8 @@ RUN go build -o /out/usher ./cmd/usher
 FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/usher /usr/local/bin/usher
+# A fixed numeric non-root UID (ADR-0022, decision 7): Kubernetes'
+# runAsNonRoot can only verify a numeric user, and nothing here needs root.
+USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/usher"]
