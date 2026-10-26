@@ -13,7 +13,7 @@ require (
 	github.com/JonasBorgesLM/moat/redisstore v0.2.2
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/lestrrat-go/jwx/v4 v4.5.0
+	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
@@ -68,7 +68,6 @@ require (
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
-	github.com/valyala/fastjson v1.6.10 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
