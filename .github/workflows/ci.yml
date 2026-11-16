@@ -34,10 +34,10 @@ env:
   # toolchain the images ship with, not setup-go's "stable" (ADR-0008's
   # amendment, #139) -- "stable" lagged a fixed release by hours, and with
   # GOTOOLCHAIN=local it could not even build a module whose floor was newer.
-  GO_VERSION: "1.27.2"
+  GO_VERSION: "1.27.4"
   # golangci-lint typechecks against the stdlib of the toolchain it was built
   # with and refuses a newer one. This pin and LINT_VERSION move together.
-  LINT_GO_VERSION: "1.27.2"
+  LINT_GO_VERSION: "1.27.4"
   LINT_VERSION: "v2.14.0"
   # A commit, not a tag: no gosec release yet reads Go 1.27's export data
   # (v2.28.0 and v2.29.0 both fail with "export data version 5 is greater
