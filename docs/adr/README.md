@@ -38,6 +38,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
 | [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
 | [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151), [Amendment (implemented)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--implemented-152-153-154) |
+| [`0023`](0023-privilege-granting-actions-audited-in-tally-fail-closed.md) | Privilege-granting actions are recorded in `tally` before they take effect, and fail closed | Proposed | — |
 
 ## Reopening criteria on the record
 
@@ -60,8 +61,9 @@ decided is the one that gets implemented by accident.
 
 | Question | Blocks | Where |
 | --- | --- | --- |
+| `/token`'s latency budget with a durable audit append, from `sapper`'s measurement (JonasBorgesLM/tally#54); and whether login success is a grant | Accepting ADR-0023, and the `tally` adapter | [ADR-0023](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#open-questions--why-this-is-proposed) |
 
-None currently open. ADR-0022 (Kubernetes) was listed here while Proposed and
+ADR-0022 (Kubernetes) was listed here while Proposed and
 was accepted in #151. The earlier entry this table held — whether
 `Clear-Site-Data: "cookies"` on logout may clear the whole registrable
 domain — was decided in [ADR-0021](0021-clear-site-data-omits-cookies-on-logout.md) (#48).
