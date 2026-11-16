@@ -3,6 +3,7 @@
 ## Status
 Proposed — 2026-11-16 (#161). Accepted, it supersedes the part of ADR-0017 that
 rejected failing closed, for the actions this ADR names as granting privilege.
+Accepted — 2026-11-16, with the answers in the Amendment below (#161)
 
 ## Context
 ADR-0017 ships RF-09's events to `crier`, through a bounded buffer that drops
@@ -169,3 +170,37 @@ A spool for privilege-reducing records (Decision 2) is added when an audit
 finding or a real incident shows a reduction executed and never recorded, or
 when a deployment runs where the log's failure rate makes that window
 routine.
+
+## Amendment — accepted (#161)
+
+Accepted as proposed, with the two open questions answered. It now supersedes
+the part of ADR-0017 that rejected failing closed, for the actions Decision 2
+names as granting privilege; ADR-0017 still governs the `crier` path.
+
+1. **Login success is a grant.** It fails closed, as Decision 2's table says:
+   the session it creates later grants tokens without a password, so a login
+   with no record is the same gap as a token issued with no record. The cost
+   is accepted: a log failure stops every login on that replica, and
+   Decision 4 takes the replica out of rotation.
+2. **The latency budget is provisional.** `Record` may add at most **10 ms**
+   to `/token`'s p99 on Linux. It is set from `tally`'s measurements (p99 4–7 ms
+   in a Linux VM with a 2 ms batching delay), not from a production disk, and it
+   is confirmed or replaced by `sapper`'s measurement of `/token` with the
+   adapter in place (JonasBorgesLM/tally#54), recorded as a further amendment.
+   Until then, a breach of it is a finding to measure, not a reason to fail
+   open.
+
+**The dependency is pinned before `tally` has a release.** `tally` has no tag
+yet, so the adapter's pull request pins an exact pseudo-version of its
+`develop` branch, on the allow-list with this ADR (RNF-09), and moves to
+`v0.1.0` when that is tagged. Exactly pinned and never bumped by a bot, as
+ADR-0011 does for `moat`.
+
+**The requirements are amended** with the text under Decision 5, in the same
+pull request as this acceptance. T-19's residual changes when the adapter
+lands, not before: until then nothing records in `tally`.
+
+The work that follows, each in its own pull request: the `audit.Recorder` port
+and the `tally` adapter, with the policy of Decision 2 and its failure paths
+tested (JonasBorgesLM/tally#52); then `sapper`'s measurement
+(JonasBorgesLM/tally#54).
