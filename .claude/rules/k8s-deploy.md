@@ -40,8 +40,8 @@ the CIDR. Never `0.0.0.0/0` (ADR-0010).
 
 - `/healthz` is **liveness**: it answers `200` while the process is alive and
   checks no dependency.
-- `/readyz` is **readiness**: Postgres, Redis, and a signing key valid now
-  (RNF-10).
+- `/readyz` is **readiness**: Postgres, Redis, a signing key valid now
+  (RNF-10), and an audit log that is not poisoned (ADR-0023).
 - Never swap them. Liveness on `/readyz` means a Redis blip restarts every
   pod, turning a recoverable outage into a crash loop.
 - Both are the `operational` route group (`cmd/usher/chain.go`): no rate
@@ -75,8 +75,13 @@ final stage is `alpine`. A move to `scratch` or distroless must switch to the
 native `sleep` lifecycle action at the same time, or the hook fails and the
 delay disappears.
 
-`maxUnavailable: 0` and `maxSurge: 1` are a pair. Together they make the
-rollout zero-downtime rather than merely fast.
+usher is a **StatefulSet** since ADR-0023 (ADR-0022's amendment): a pod's
+name and volume cannot exist twice, so there is no `maxSurge`. Its rolling
+update replaces one pod at a time and waits for it to be Ready, while the
+other replica carries the traffic; the rollout test measured that losing
+nothing. The resource server is still a Deployment, where `maxUnavailable: 0`
+and `maxSurge: 1` are a pair: together they make the rollout zero-downtime
+rather than merely fast.
 
 ## Startup
 
@@ -102,8 +107,29 @@ policy. That is intended (RNF-05), not a probe problem.
 - usher reads the keyset **once, at startup**. Rotation (ADR-0015) is: add the
   next key to the Secret with a future `sign_from`, then
   `kubectl rollout restart`. Updating the Secret alone changes nothing.
-- Neither binary writes to its filesystem (only `cmd/genkeys` does), so
-  `readOnlyRootFilesystem: true` holds for both.
+- Neither binary writes to its root filesystem (only `cmd/genkeys` does), so
+  `readOnlyRootFilesystem: true` holds for both. usher's one writable path is
+  its audit volume, `/audit`.
+
+## The audit log is per replica (ADR-0023)
+
+- Each pod has **its own** audit log, vault and spool, on its own
+  `volumeClaimTemplates` volume, and **its own** signing key: the Secret
+  `usher-audit-keys` holds `usher-<ordinal>.key` for each ordinal, the key's
+  name (`usher.local/usher-<ordinal>`) is that replica's origin, and the pod
+  reads `/audit-keys/$(POD_NAME).key`. `k8s/up.sh` generates one per replica
+  in the manifest. **Scaling up without generating the new ordinal's key
+  starts a pod that refuses to start**, which is intended (RNF-05). Scaling
+  down leaves the removed ordinal's volume, its evidence, in place.
+- `fsGroupChangePolicy: OnRootMismatch` is load-bearing. The default
+  re-applies group `rwx` to every file at every start, and tally's file store
+  refuses a log directory looser than `0700`: `usher-0` crash-looped on its
+  second start without it.
+- The token keyset and the audit keys never share a key (ADR-0015, ADR-0023):
+  they are separate Secrets of separate key types.
+- The spool on the volume is the host's half of an anchor and protects
+  nothing on its own; this disposable cluster runs nothing that pulls it off
+  the node.
 
 ## Replicas
 

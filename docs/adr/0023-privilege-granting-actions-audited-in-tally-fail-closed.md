@@ -204,3 +204,30 @@ The work that follows, each in its own pull request: the `audit.Recorder` port
 and the `tally` adapter, with the policy of Decision 2 and its failure paths
 tested (JonasBorgesLM/tally#52); then `sapper`'s measurement
 (JonasBorgesLM/tally#54).
+
+## Amendment — one log and one vault per replica (#165)
+
+Decision 5 gave each replica its own log, origin and signing key. Writing the
+adapter showed the vault has to follow: `tally`'s `seal.FileVault` has a single
+writer, holding a lock on its directory, so two replicas cannot share one.
+
+**Decision:** each replica has its own vault beside its own log, under a KEK
+the replicas may share. Its consequences, accepted:
+
+- **The same person has a different `SubjectRef` on each replica.** Linking a
+  person's records across replicas needs their identifier resolved in each
+  replica's vault; the refs alone do not link them. That is less linkage, not
+  more.
+- **A shred is one per replica.** A deletion request is applied to every
+  replica's vault, and is complete once the last one has shredded and the
+  last vault backup predating it is gone (`tally`'s RUNBOOK, "Shredding a
+  subject" and "Vault backups").
+- **On Kubernetes, usher becomes a StatefulSet** (ADR-0022's amendment, #165),
+  so that each pod has a stable name, its own volume for the log and the
+  vault, and its own key.
+
+**Rejected: a shared vault in Postgres,** implementing `seal.Vault` in usher.
+One map and one shred per person, at the cost of a new cryptographic component
+in usher, with its own ADR and its own way to fail. Reopen if cross-replica
+linkage of a person's records, or the cost of shredding on every replica,
+becomes a real need.
