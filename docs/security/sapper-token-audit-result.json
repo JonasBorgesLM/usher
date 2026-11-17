@@ -1,0 +1,227 @@
+{
+  "target": {
+    "base_url": "http://localhost:8080",
+    "tier": "lab",
+    "caps": {
+      "max_concurrency": 25,
+      "max_duration": 180000000000
+    }
+  },
+  "scenario": "usher-token-with-audit-log",
+  "profile": "sustained",
+  "started_at": "2026-11-17T02:13:54.776315758Z",
+  "completed_at": "2026-11-17T02:15:39.804347769Z",
+  "aborted": false,
+  "metrics": {
+    "runs": 3,
+    "status_counts": {
+      "200": 195583
+    },
+    "p50": {
+      "mean": 4148899,
+      "min": 4054156,
+      "max": 4284793,
+      "stddev": 98550
+    },
+    "p90": {
+      "mean": 6604446,
+      "min": 6559220,
+      "max": 6649079,
+      "stddev": 36687
+    },
+    "p99": {
+      "mean": 8401403,
+      "min": 8120092,
+      "max": 8652703,
+      "stddev": 218470
+    },
+    "error_rate": {
+      "mean": 0,
+      "min": 0,
+      "max": 0,
+      "stddev": 0
+    }
+  },
+  "verdict": {
+    "passed": true,
+    "results": [
+      {
+        "name": "p99_under",
+        "passed": true,
+        "detail": "p99 mean 8.401403ms (±218.47µs over 3 runs) vs \u003c 50ms"
+      },
+      {
+        "name": "error_rate_under",
+        "passed": true,
+        "detail": "error rate mean 0.0000 (±0.0000 over 3 runs) vs \u003c 0.0100"
+      },
+      {
+        "name": "status_absent",
+        "passed": true,
+        "detail": "status 500 observed 0 times in 195583 responses across 3 runs (want 0)"
+      }
+    ]
+  },
+  "timeline": [
+    {
+      "start": 0,
+      "total": 3240,
+      "errors": 0,
+      "status_counts": {
+        "200": 3240
+      }
+    },
+    {
+      "start": 1500000000,
+      "total": 2957,
+      "errors": 0,
+      "status_counts": {
+        "200": 2957
+      }
+    },
+    {
+      "start": 3000000000,
+      "total": 3265,
+      "errors": 0,
+      "status_counts": {
+        "200": 3265
+      }
+    },
+    {
+      "start": 4500000000,
+      "total": 3231,
+      "errors": 0,
+      "status_counts": {
+        "200": 3231
+      }
+    },
+    {
+      "start": 6000000000,
+      "total": 3290,
+      "errors": 0,
+      "status_counts": {
+        "200": 3290
+      }
+    },
+    {
+      "start": 7500000000,
+      "total": 3217,
+      "errors": 0,
+      "status_counts": {
+        "200": 3217
+      }
+    },
+    {
+      "start": 9000000000,
+      "total": 3239,
+      "errors": 0,
+      "status_counts": {
+        "200": 3239
+      }
+    },
+    {
+      "start": 10500000000,
+      "total": 3269,
+      "errors": 0,
+      "status_counts": {
+        "200": 3269
+      }
+    },
+    {
+      "start": 12000000000,
+      "total": 3291,
+      "errors": 0,
+      "status_counts": {
+        "200": 3291
+      }
+    },
+    {
+      "start": 13500000000,
+      "total": 3188,
+      "errors": 0,
+      "status_counts": {
+        "200": 3188
+      }
+    },
+    {
+      "start": 15000000000,
+      "total": 3252,
+      "errors": 0,
+      "status_counts": {
+        "200": 3252
+      }
+    },
+    {
+      "start": 16500000000,
+      "total": 3249,
+      "errors": 0,
+      "status_counts": {
+        "200": 3249
+      }
+    },
+    {
+      "start": 18000000000,
+      "total": 3199,
+      "errors": 0,
+      "status_counts": {
+        "200": 3199
+      }
+    },
+    {
+      "start": 19500000000,
+      "total": 3183,
+      "errors": 0,
+      "status_counts": {
+        "200": 3183
+      }
+    },
+    {
+      "start": 21000000000,
+      "total": 3303,
+      "errors": 0,
+      "status_counts": {
+        "200": 3303
+      }
+    },
+    {
+      "start": 22500000000,
+      "total": 3221,
+      "errors": 0,
+      "status_counts": {
+        "200": 3221
+      }
+    },
+    {
+      "start": 24000000000,
+      "total": 3210,
+      "errors": 0,
+      "status_counts": {
+        "200": 3210
+      }
+    },
+    {
+      "start": 25500000000,
+      "total": 3263,
+      "errors": 0,
+      "status_counts": {
+        "200": 3263
+      }
+    },
+    {
+      "start": 27000000000,
+      "total": 3239,
+      "errors": 0,
+      "status_counts": {
+        "200": 3239
+      }
+    },
+    {
+      "start": 28500000000,
+      "total": 3141,
+      "errors": 0,
+      "status_counts": {
+        "200": 3141
+      }
+    }
+  ]
+}
