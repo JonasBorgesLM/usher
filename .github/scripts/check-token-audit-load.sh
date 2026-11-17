@@ -9,6 +9,10 @@
 #
 #   SAPPER=/path/to/sapper ./.github/scripts/check-token-audit-load.sh
 #
+# The copy out of the volumes runs as root in a container and is handed to
+# whoever runs the script: on Linux a bind mount keeps the container's
+# owner, and the files are 0600 (Docker Desktop on a Mac hides this).
+#
 # Needs Docker, Go and python3. It writes its own .env and
 # docker-compose.override.yml and removes both on exit, with the stack and
 # its volumes, so it refuses to start if either file already exists. Results
@@ -88,8 +92,8 @@ if [ ! -s "$out/audit-sync.txt" ]; then
 fi
 
 echo "--- the log under that load verifies against its spool ---"
-docker run --rm -v usher_usher-audit:/audit:ro -v usher_usher-audit-keys:/k:ro -v "$work":/out \
-  alpine sh -c 'cp -r /audit/log /audit/anchor /out/ && cp /k/signer.pub /out/'
+docker run --rm -e OWNER="$(id -u):$(id -g)" -v usher_usher-audit:/audit:ro -v usher_usher-audit-keys:/k:ro -v "$work":/out \
+  alpine sh -c 'cp -r /audit/log /audit/anchor /out/ && cp /k/signer.pub /out/ && chown -R "$OWNER" /out'
 if go run github.com/JonasBorgesLM/tally/cmd/tally verify --dir "$work/log" \
   --key "$(cat "$work/signer.pub")" --anchor "$work/anchor" --require-fully-attested | tee "$out/verify.txt"; then
   echo "ok    the audit log verifies"

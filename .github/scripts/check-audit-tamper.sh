@@ -57,8 +57,8 @@ GOEXPERIMENT=jsonv2 \
 ./scripts/dev-access-token.sh >/dev/null
 docker compose stop usher >/dev/null # its closing checkpoint covers the whole log
 
-docker run --rm -v usher_usher-audit:/audit:ro -v usher_usher-audit-keys:/k:ro -v "$work":/out \
-  alpine sh -c 'mkdir /out/intact && cp -r /audit/log /audit/anchor /out/intact/ && cp /k/signer.pub /out/'
+docker run --rm -e OWNER="$(id -u):$(id -g)" -v usher_usher-audit:/audit:ro -v usher_usher-audit-keys:/k:ro -v "$work":/out \
+  alpine sh -c 'mkdir /out/intact && cp -r /audit/log /audit/anchor /out/intact/ && cp /k/signer.pub /out/ && chown -R "$OWNER" /out'
 key=$(cat "$work/signer.pub")
 
 # tamper rewrites the segment in $2: "alter" changes one byte inside the last
