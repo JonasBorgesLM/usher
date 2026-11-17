@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -60,6 +62,8 @@ var ErrPoisoned = errors.New("tallyaudit: the audit log is poisoned; restart and
 type Recorder struct {
 	log      *tally.Log
 	vault    *seal.FileVault
+	logger   *slog.Logger
+	stats    *syncStats
 	poisoned *atomic.Bool
 }
 
@@ -110,14 +114,15 @@ func open(ctx context.Context, cfg Config, store tally.Store, logger *slog.Logge
 		return nil, fmt.Errorf("tallyaudit: open the vault: %w", err)
 	}
 	poisoned := &atomic.Bool{}
+	stats := &syncStats{}
 	log, err := tally.Open(ctx, store, signer,
 		tally.WithAnchors(spool),
-		tally.WithObserver(observer{logger: logger, poisoned: poisoned}))
+		tally.WithObserver(observer{logger: logger, poisoned: poisoned, stats: stats}))
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("tallyaudit: open the log: %w", err), vault.Close())
 	}
 	logger.Info("audit log open", "origin", signer.Name())
-	return &Recorder{log: log, vault: vault, poisoned: poisoned}, nil
+	return &Recorder{log: log, vault: vault, logger: logger, stats: stats, poisoned: poisoned}, nil
 }
 
 // loadKEK reads a 32-byte key. Its id is derived from the key, so a vault
@@ -215,8 +220,72 @@ func (r *Recorder) Ready(context.Context) error {
 
 // Close signs the log's closing checkpoint, publishes it, and closes the
 // log and the vault.
+//
+// It logs the batches written since Open and the p50 and p99 of their
+// fsyncs: the log's own share of a grant's latency, which ADR-0023's budget
+// is about and which a load test of the HTTP endpoint cannot separate out.
 func (r *Recorder) Close() error {
-	return errors.Join(r.log.Close(), r.vault.Close())
+	err := errors.Join(r.log.Close(), r.vault.Close())
+	s := r.SyncStats()
+	r.logger.Info("audit log closed", "batches", s.Batches, "entries", s.Entries,
+		"sync_p50_ms", ms(s.P50), "sync_p99_ms", ms(s.P99), "sync_max_ms", ms(s.Max))
+	return err
+}
+
+func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
+
+// SyncStats is what the log reported of its batches since Open: how many,
+// how many entries, and the p50, p99 and maximum of the store's time to make
+// one durable, fsync included. Percentiles are over the most recent
+// syncSamples batches.
+type SyncStats struct {
+	Batches, Entries int
+	P50, P99, Max    time.Duration
+}
+
+// SyncStats returns the batch statistics so far.
+func (r *Recorder) SyncStats() SyncStats { return r.stats.snapshot() }
+
+// syncSamples bounds the memory the statistics hold: the most recent
+// batches, a ring.
+const syncSamples = 1 << 16
+
+// syncStats collects Observer.Batch reports. Batch is called from the log's
+// writer and must not block; the lock is held for an append.
+type syncStats struct {
+	mu               sync.Mutex
+	batches, entries int
+	samples          []time.Duration
+	next             int
+	maxSync          time.Duration
+}
+
+func (s *syncStats) add(n int, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.batches++
+	s.entries += n
+	s.maxSync = max(s.maxSync, d)
+	if len(s.samples) < syncSamples {
+		s.samples = append(s.samples, d)
+		return
+	}
+	s.samples[s.next] = d
+	s.next = (s.next + 1) % syncSamples
+}
+
+func (s *syncStats) snapshot() SyncStats {
+	s.mu.Lock()
+	sorted := slices.Clone(s.samples)
+	out := SyncStats{Batches: s.batches, Entries: s.entries, Max: s.maxSync}
+	s.mu.Unlock()
+	if len(sorted) == 0 {
+		return out
+	}
+	slices.Sort(sorted)
+	at := func(q float64) time.Duration { return sorted[min(len(sorted)-1, int(float64(len(sorted))*q))] }
+	out.P50, out.P99 = at(0.50), at(0.99)
+	return out
 }
 
 // observer reports the log's conditions to the logger. Its methods are
@@ -224,10 +293,12 @@ func (r *Recorder) Close() error {
 type observer struct {
 	logger   *slog.Logger
 	poisoned *atomic.Bool
+	stats    *syncStats
 }
 
-// Batch reports a durable batch; nothing to say about one.
-func (o observer) Batch(int, time.Duration) {}
+// Batch reports a durable batch and the time its store took, fsync
+// included; Close logs their distribution.
+func (o observer) Batch(n int, syncLatency time.Duration) { o.stats.add(n, syncLatency) }
 
 // AnchorPublish reports a checkpoint the spool did not take.
 func (o observer) AnchorPublish(err error, dropped uint64) {

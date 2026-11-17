@@ -584,7 +584,7 @@ probe_t18() {
 
 probe_t19() {
   header "T-19 -- loss or forgery of the audit trail"
-  gap "not probeable from outside by design: the record is each replica's tally log (ADR-0023), checked offline with tally verify against an anchor off the host, not through any endpoint. Grants failing closed when the log fails, reductions executing anyway, and each replica's log verifying under its own key are tested in-process (cmd/usher, internal/audit). A family revoked for reuse is also on its Postgres row (ADR-0017); T-07's probe above exercises that path."
+  gap "not probeable from outside by design: the record is each replica's tally log (ADR-0023), checked offline with tally verify against an anchor off the host, not through any endpoint. Grants failing closed when the log fails, reductions executing anyway, and each replica's log verifying under its own key are tested in-process (cmd/usher, internal/audit); tampering with a real replica's log is detected on the running stack by .github/scripts/check-audit-tamper.sh. A family revoked for reuse is also on its Postgres row (ADR-0017); T-07's probe above exercises that path."
 }
 
 # --- T-21: script injection in the login and consent pages ---------------------
