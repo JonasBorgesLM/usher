@@ -90,6 +90,9 @@ GOEXPERIMENT=jsonv2 \
   USHER_CLIENTS_PATH=./clients.dev.json \
   USHER_KEYS_DIR="$keys_dir" \
   USHER_DIRECTLY_EXPOSED=true \
+  USHER_TALLY_LOG_DIR=/nonexistent USHER_TALLY_SIGNER_KEY_FILE=/nonexistent \
+  USHER_TALLY_VAULT_DIR=/nonexistent USHER_TALLY_KEK_FILE=/nonexistent \
+  USHER_TALLY_ANCHOR_DIR=/nonexistent \
   go run ./cmd/seed
 
 failed=0

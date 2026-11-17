@@ -595,6 +595,35 @@ type Emitter interface {
 (`oauth.FamilyStore.Rotate` + `Revoke`, ADR-0017) — the row is what survives
 if this `Emitter` cannot.
 
+Beside `Emitter`, a second port records durably and reports failure
+([ADR-0023](adr/0023-privilege-granting-actions-audited-in-tally-fail-closed.md)):
+
+```go
+// Record carries an Event's fields minus Detail, with an ID generated before
+// the action (NewRecordID) and reused on every retry.
+type Record struct {
+	ID         string
+	Type       EventType
+	Outcome    Outcome
+	Subject    string // canonical identifier; never stored in clear
+	ClientID   string
+	SourceAddr string // stored only sealed under the subject's key
+	At         time.Time
+}
+
+type Recorder interface {
+	Record(ctx context.Context, r Record) error
+}
+```
+
+`internal/audit/tallyaudit` implements it over this replica's `tally` log: a
+`filestore` log, a `seal.FileVault` that turns the subject into a random
+`SubjectRef` and seals the source address under that subject's key, and an
+`anchor.Dir` spool. `cmd/usher` opens it before listening, puts its `Ready`
+in `/readyz`, and closes it after the server drains, so the closing
+checkpoint covers every request answered. Each replica has its own log, key,
+origin and vault (ADR-0023's amendment, #165).
+
 ---
 
 ## 9. `internal/proxy` — never imports `internal/oauth`

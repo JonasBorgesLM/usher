@@ -31,6 +31,12 @@ func validEnv() map[string]string {
 		"USHER_CSRF_SECRET":      testCSRFSecretHex,
 		"USHER_CLIENTS_PATH":     "/etc/usher/clients.json",
 		"USHER_KEYS_DIR":         "/etc/usher/keys",
+
+		"USHER_TALLY_LOG_DIR":         "/var/lib/usher/audit/log",
+		"USHER_TALLY_SIGNER_KEY_FILE": "/etc/usher/audit/signer.key",
+		"USHER_TALLY_VAULT_DIR":       "/var/lib/usher/audit/vault",
+		"USHER_TALLY_KEK_FILE":        "/etc/usher/audit/kek",
+		"USHER_TALLY_ANCHOR_DIR":      "/var/lib/usher/audit/anchor",
 	}
 }
 
@@ -62,7 +68,8 @@ func TestLoad_DefaultsApplyWhenLifetimesUnset(t *testing.T) {
 // rather than one hand-picked case, so adding a third required field without
 // a matching test case here is a gap this test would otherwise hide.
 func TestLoad_MissingRequiredField(t *testing.T) {
-	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR", "USHER_ISSUER", "USHER_CSRF_SECRET", "USHER_CLIENTS_PATH", "USHER_KEYS_DIR"} {
+	for _, key := range []string{"USHER_DATABASE_URL", "USHER_REDIS_ADDR", "USHER_ISSUER", "USHER_CSRF_SECRET", "USHER_CLIENTS_PATH", "USHER_KEYS_DIR",
+		"USHER_TALLY_LOG_DIR", "USHER_TALLY_SIGNER_KEY_FILE", "USHER_TALLY_VAULT_DIR", "USHER_TALLY_KEK_FILE", "USHER_TALLY_ANCHOR_DIR"} {
 		t.Run(key, func(t *testing.T) {
 			env := validEnv()
 			delete(env, key)
@@ -378,5 +385,25 @@ func lifetimeValue(cfg Config, lb lifetimeBound) time.Duration {
 		return cfg.ConsumerJWKSCacheTTL
 	default:
 		panic("lifetimeValue: unhandled lifetimeBound " + lb.env)
+	}
+}
+
+// The audit log's free-space warning has a default, takes a number of bytes,
+// and refuses anything else rather than silently disabling the warning.
+func TestLoad_TallyFreeSpaceThreshold(t *testing.T) {
+	cfg, err := Load(mapGetenv(validEnv()))
+	if err != nil || cfg.TallyFreeSpaceThreshold != defaultTallyFreeSpaceThreshold {
+		t.Fatalf("default: %d, %v", cfg.TallyFreeSpaceThreshold, err)
+	}
+	env := validEnv()
+	env["USHER_TALLY_FREE_SPACE_THRESHOLD"] = "1048576"
+	if cfg, err = Load(mapGetenv(env)); err != nil || cfg.TallyFreeSpaceThreshold != 1<<20 {
+		t.Fatalf("set: %d, %v", cfg.TallyFreeSpaceThreshold, err)
+	}
+	for _, bad := range []string{"-1", "64MiB", "1e9"} {
+		env["USHER_TALLY_FREE_SPACE_THRESHOLD"] = bad
+		if _, err = Load(mapGetenv(env)); err == nil {
+			t.Errorf("USHER_TALLY_FREE_SPACE_THRESHOLD=%q loaded", bad)
+		}
 	}
 }

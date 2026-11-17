@@ -11,10 +11,11 @@
 #    measured on a cluster that fails this: the result would be "trust
 #    every pod".
 #
-# 2. A rolling restart of both Deployments under load. The load runs
-#    inside the cluster, through Traefik, with a real access token: a
-#    port-forward would attach to one pod and die with it, which is the
-#    moment this test exists to observe. Every request must answer 200.
+# 2. A rolling restart of usher (a StatefulSet) and the resource server
+#    under load. The load runs inside the cluster, through Traefik, with a
+#    real access token: a port-forward would attach to one pod and die with
+#    it, which is the moment this test exists to observe. Every request
+#    must answer 200.
 #    A token minted before the rollout validates on pods that started
 #    after it, because every replica shares the keyset and Redis.
 #
@@ -68,10 +69,11 @@ k -n "$NS" run load --image="$CURL_IMAGE" --restart=Never --env="TOKEN=${token}"
 k -n "$NS" wait --for=condition=Ready pod/load --timeout=60s >/dev/null
 sleep 5 # requests flowing before anything restarts
 
-for d in usher resource-server; do
-  k -n "$NS" rollout restart "deployment/$d" >/dev/null
-  k -n "$NS" rollout status "deployment/$d" --timeout=180s >/dev/null
-  echo "ok    rolled deployment/$d"
+# usher is a StatefulSet since ADR-0023 (its pods carry their own audit log).
+for d in statefulset/usher deployment/resource-server; do
+  k -n "$NS" rollout restart "$d" >/dev/null
+  k -n "$NS" rollout status "$d" --timeout=180s >/dev/null
+  echo "ok    rolled $d"
 done
 
 k -n "$NS" wait --for=jsonpath='{.status.phase}'=Succeeded pod/load --timeout=$((LOAD_SECONDS + 60))s >/dev/null

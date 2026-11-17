@@ -75,7 +75,20 @@ services:
     # and writes 0600 files; usher runs as UID 65532 (ADR-0022), so the
     # keyset is handed to that UID afterwards. On every run, which also
     # fixes a volume created before the images went non-root.
-    entrypoint: ["sh", "-c", "go run ./cmd/genkeys && chown -R 65532:65532 /keys"]
+    #
+    # It also generates this replica's audit signing key and the KEK that
+    # wraps its vault (ADR-0023), once each, into usher-audit-keys, with
+    # tally keygen from the tally module usher already requires; and hands
+    # the audit data volume to UID 65532, the only writable path usher has.
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        umask 077 &&
+        go run ./cmd/genkeys &&
+        { [ -f /audit-keys/signer.key ] || go run github.com/JonasBorgesLM/tally/cmd/tally keygen --name usher.local/compose --out /audit-keys/signer; } &&
+        { [ -f /audit-keys/kek ] || head -c 32 /dev/urandom > /audit-keys/kek; } &&
+        chown -R 65532:65532 /keys /audit-keys /audit
     working_dir: /src
     environment:
       USHER_DATABASE_URL: postgres://${POSTGRES_USER:-usher}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-usher}
@@ -86,8 +99,16 @@ services:
       USHER_CSRF_SECRET: ${USHER_CSRF_SECRET:?set USHER_CSRF_SECRET in .env — see .env.example}
       USHER_CLIENTS_PATH: /etc/usher/clients.json
       USHER_KEYS_DIR: /keys
+      # config.Load has no partial mode: genkeys only needs these to be set.
+      USHER_TALLY_LOG_DIR: /audit/log
+      USHER_TALLY_SIGNER_KEY_FILE: /audit-keys/signer.key
+      USHER_TALLY_VAULT_DIR: /audit/vault
+      USHER_TALLY_KEK_FILE: /audit-keys/kek
+      USHER_TALLY_ANCHOR_DIR: /audit/anchor
     volumes:
       - usher-keys:/keys
+      - usher-audit-keys:/audit-keys
+      - usher-audit:/audit
       - ./clients.dev.json:/etc/usher/clients.json:ro
     networks:
       usher:
@@ -114,8 +135,19 @@ services:
       # matches (also clients.dev.json's own "audiences").
       USHER_API_UPSTREAM_URL: http://resource-server:8081
       USHER_API_UPSTREAM_AUDIENCE: https://resource-server.usher.local
+      # ADR-0023: this replica's audit log, vault and spool. The spool
+      # protects nothing until something off the host pulls from it, which
+      # this local stack does not run (tally's README, "Anchoring off the
+      # host").
+      USHER_TALLY_LOG_DIR: /audit/log
+      USHER_TALLY_SIGNER_KEY_FILE: /audit-keys/signer.key
+      USHER_TALLY_VAULT_DIR: /audit/vault
+      USHER_TALLY_KEK_FILE: /audit-keys/kek
+      USHER_TALLY_ANCHOR_DIR: /audit/anchor
     volumes:
       - usher-keys:/keys:ro
+      - usher-audit-keys:/audit-keys:ro
+      - usher-audit:/audit
       - ./clients.dev.json:/etc/usher/clients.json:ro
     depends_on:
       postgres:
@@ -173,3 +205,5 @@ volumes:
   postgres-data:
   redis-data:
   usher-keys:
+  usher-audit-keys:
+  usher-audit:
