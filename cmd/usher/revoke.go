@@ -39,13 +39,14 @@ import (
 )
 
 type revokeHandler struct {
-	clients   []identity.Client
-	families  oauth.FamilyStore
-	validator *tokenvalidator.Validator
-	denylist  proxy.Denylist
-	emitter   audit.Emitter // RF-09; nil emits nothing
-	now       func() time.Time
-	logger    *slog.Logger
+	clients    []identity.Client
+	families   oauth.FamilyStore
+	validator  *tokenvalidator.Validator
+	denylist   proxy.Denylist
+	emitter    audit.Emitter     // RF-09; nil emits nothing
+	reductions *audit.Reductions // ADR-0023; a revocation is recorded after it executes
+	now        func() time.Time
+	logger     *slog.Logger
 }
 
 func (h *revokeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +154,12 @@ func (h *revokeHandler) writeSuccess(w http.ResponseWriter) {
 }
 
 func (h *revokeHandler) emitRevocation(ctx context.Context, clientID, subject string) {
+	// ADR-0023: a revocation reduces privilege. It has executed; its record
+	// never blocks it.
+	h.reductions.Record(ctx, audit.Record{
+		ID: audit.NewRecordID(), Type: audit.EventRevocation, Outcome: audit.OutcomeSuccess,
+		Subject: subject, ClientID: clientID, At: h.now(),
+	})
 	if h.emitter == nil {
 		return
 	}

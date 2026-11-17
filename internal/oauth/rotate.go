@@ -45,7 +45,7 @@ func RotateRefreshToken(ctx context.Context, families FamilyStore, emitter audit
 				At:      time.Now(),
 			})
 		}
-		return ErrInvalidGrant
+		return ErrRefreshReuse
 	}
 	return nil
 }

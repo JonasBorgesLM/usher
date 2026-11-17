@@ -16,13 +16,18 @@ import (
 	"html/template"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/JonasBorgesLM/moat/csrf"
+
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/session"
 )
 
 type logoutHandler struct {
-	sessions session.SessionStore
+	sessions   session.SessionStore
+	reductions *audit.Reductions // ADR-0023; a logout is recorded after it executes
+	now        func() time.Time
 
 	logoutTmpl    *template.Template
 	loggedOutTmpl *template.Template
@@ -51,10 +56,20 @@ func (h *logoutHandler) get(w http.ResponseWriter, r *http.Request) {
 // property a cookie-clear-only logout would not have.
 func (h *logoutHandler) post(w http.ResponseWriter, r *http.Request) {
 	if rawID, err := session.RawSessionID(r); err == nil {
+		// Whose session it is, for the record; a session already gone
+		// ends nothing, and is not recorded.
+		sess, getErr := h.sessions.Get(r.Context(), rawID)
 		if delErr := h.sessions.Delete(r.Context(), rawID); delErr != nil {
 			h.logger.ErrorContext(r.Context(), "logout: delete session", "error", delErr)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
+		}
+		if getErr == nil {
+			// ADR-0023: a logout reduces privilege; executed, then recorded.
+			h.reductions.Record(r.Context(), audit.Record{
+				ID: audit.NewRecordID(), Type: audit.EventLogout, Outcome: audit.OutcomeSuccess,
+				Subject: sess.Subject, SourceAddr: r.RemoteAddr, At: h.now(),
+			})
 		}
 	}
 

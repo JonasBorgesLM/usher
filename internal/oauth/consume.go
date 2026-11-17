@@ -21,6 +21,12 @@ import (
 // tell which, not that this project cannot.
 var ErrInvalidGrant = errors.New("oauth: invalid_grant")
 
+// ErrRefreshReuse is RotateRefreshToken's ErrInvalidGrant for a reused
+// refresh token, after it revoked the family (RS-11). It matches
+// ErrInvalidGrant, so the client sees the same response; it exists so the
+// caller can record the revocation (ADR-0023).
+var ErrRefreshReuse = fmt.Errorf("%w: refresh token reused; its family was revoked", ErrInvalidGrant)
+
 // ConsumeCode atomically consumes value (CodeStore.Consume — RS-04's one
 // round trip, never a GET then a DEL) and, on success, re-verifies it
 // against clientID, redirectURI and codeVerifier exactly as the

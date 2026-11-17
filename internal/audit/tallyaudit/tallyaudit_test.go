@@ -3,9 +3,14 @@ package tallyaudit
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -226,8 +231,8 @@ func TestReadyReportsAPoisonedLog(t *testing.T) {
 	if err = r.Ready(ctx); !errors.Is(err, ErrPoisoned) {
 		t.Fatalf("Ready after the failure = %v, want ErrPoisoned", err)
 	}
-	if err = r.Record(ctx, login("bob@example.com", "web-app", "")); !errors.Is(err, tally.ErrPoisoned) {
-		t.Fatalf("the next Record = %v, want tally.ErrPoisoned", err)
+	if err = r.Record(ctx, login("bob@example.com", "web-app", "")); !errors.Is(err, tally.ErrPoisoned) || !errors.Is(err, audit.ErrRecorderDown) {
+		t.Fatalf("the next Record = %v, want tally.ErrPoisoned as audit.ErrRecorderDown", err)
 	}
 }
 
@@ -271,5 +276,98 @@ func writeFile(t *testing.T, path string, b []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// replicaKey builds a signer and verifier key pair named name, in SPEC
+// §5.3's encoding, from a fixed seed: tally exports no key generator, and
+// tests need a second replica's key.
+func replicaKey(t *testing.T, name string, seed byte) (skey, vkey string) {
+	t.Helper()
+	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{seed}, ed25519.SeedSize))
+	pub := priv.Public().(ed25519.PublicKey)
+	h := sha256.Sum256(append([]byte(name+"\n\x01"), pub...))
+	id := fmt.Sprintf("%08x", binary.BigEndian.Uint32(h[:4]))
+	skey = "PRIVATE+KEY+" + name + "+" + id + "+" + base64.StdEncoding.EncodeToString(append([]byte{1}, priv.Seed()...))
+	vkey = name + "+" + id + "+" + base64.StdEncoding.EncodeToString(append([]byte{1}, pub...))
+	return skey, vkey
+}
+
+// Two replicas, each with its own log, key and vault (ADR-0023's amendment,
+// #165): each log verifies under its own key and fails as UnknownKey under
+// the other's, and the same person has a different ref on each.
+//
+// Seen failing with both replicas given the same signer key: each log then
+// verified under the other's key.
+func TestReplicasAreSeparate(t *testing.T) {
+	ctx := context.Background()
+	type replica struct {
+		cfg  Config
+		vkey string
+	}
+	var reps []replica
+	for i, name := range []string{"usher.test/usher-0", "usher.test/usher-1"} {
+		cfg := testConfig(t)
+		skey, vkey := replicaKey(t, name, byte(10+i))
+		writeFile(t, cfg.SignerKeyFile, []byte(skey))
+		r, err := Open(ctx, cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = r.Record(ctx, login("user-1", "web-app", "203.0.113.7")); err != nil {
+			t.Fatal(err)
+		}
+		if err = r.Close(); err != nil {
+			t.Fatal(err)
+		}
+		reps = append(reps, replica{cfg, vkey})
+	}
+	verifyUnder := func(dir, vkey string) *tally.Report {
+		t.Helper()
+		keys, err := tally.NewVerifiers(vkey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd, err := filestore.OpenReader(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rep, err := tally.Verify(ctx, rd, keys)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rep
+	}
+	refs := map[tally.SubjectRef]bool{}
+	for i, own := range reps {
+		other := reps[1-i]
+		if rep := verifyUnder(own.cfg.LogDir, own.vkey); !rep.OK() || rep.AttestedSize != 2 {
+			t.Fatalf("replica %d under its own key: %+v", i, rep)
+		}
+		rep := verifyUnder(own.cfg.LogDir, other.vkey)
+		unknown := false
+		for _, f := range rep.Failures {
+			unknown = unknown || f.Kind == tally.UnknownKey
+		}
+		if rep.OK() || !unknown {
+			t.Fatalf("replica %d under the other replica's key: %+v, want UnknownKey", i, rep)
+		}
+		kek, err := loadKEK(own.cfg.KEKFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := seal.OpenFileVault(ctx, own.cfg.VaultDir, kek)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ref, err := v.Resolve(ctx, []byte("user-1"))
+		_ = v.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		refs[ref] = true
+	}
+	if len(refs) != 2 {
+		t.Fatal("the same person has the same ref on both replicas")
 	}
 }

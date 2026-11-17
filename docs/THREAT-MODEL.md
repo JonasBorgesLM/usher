@@ -231,12 +231,29 @@ the JWKS.
 **Actor:** an attacker covering tracks; anyone able to reach `crier`.
 **Impact:** an incident nobody can reconstruct — reuse detection that fired and
 was never seen.
-**Mitigation:** RF-09 (versioned schema), RI-03 (authenticated shipping;
-`crier` overwrites client-asserted identity, `crier/ADR-0008`), RS-23.
-**Residual:** delivery depends on `crier`, through a bounded buffer whose drops
-are counted, not prevented (ADR-0017). The one fact that must not be lost —
-that a family was revoked for reuse (RS-11) — is also recorded on the family row
-in Postgres. Every other event can be lost with `crier`.
+**Mitigation:** RF-09 (versioned schema), RI-03: every grant, reduction and
+failed login is recorded in each replica's `tally` log, a hash chain with signed
+checkpoints published off the host, which detects alteration, removal and
+reordering of what a checkpoint covers. Grants are recorded before they take
+effect and denied when they cannot be, so no token, consent or session exists
+without its record (ADR-0023). `crier` remains the dashboards' path
+(authenticated shipping; it overwrites client-asserted identity,
+`crier/ADR-0008`). RS-23.
+**Residual:**
+- Detection, not prevention, and only against a checkpoint that left the host
+  before the tampering: whoever holds the host and the replica's signing key can
+  rewrite what no anchored checkpoint covers. The anchor's half off the host is
+  the deployment's; neither the compose stack nor `k8s/` runs one.
+- A reduction or failed login whose record fails is executed and not recorded
+  if the log is poisoned: no retry in the process can reach it again. The alarm
+  names the record's ID, type, client and time, never the person (ADR-0023's
+  amendment, #167).
+- Events an unauthenticated attacker can cause without limit — rate-limit
+  rejections, tokens rejected at the gateway — go to `crier` only. Recording
+  them in `tally` would let that attacker fill the audit volume, poisoning the
+  log and denying every grant. Failed logins are recorded, bounded by login's
+  rate limits (RS-22), with no subject when the identifier names nobody.
+- What `crier` receives can still be lost with it; it is no longer the record.
 
 ### T-20 — Scope escalation and consent abuse
 **Actor:** malicious client.

@@ -95,9 +95,14 @@ func TestAuthenticator_Attempt_WrongPasswordFails(t *testing.T) {
 	store := newFakeUserStore(User{ID: "1", Identifier: "alice@example.com", PasswordHash: mustHash(t, "right password")})
 	auth := newTestAuthenticator(t, store)
 
-	_, err := auth.Attempt(context.Background(), "alice@example.com", "wrong password")
+	result, err := auth.Attempt(context.Background(), "alice@example.com", "wrong password")
 	if !errors.Is(err, ErrLoginFailed) {
 		t.Fatalf("Attempt with the wrong password = %v, want ErrLoginFailed", err)
+	}
+	// The user the password was checked against, for the failed login's
+	// audit record (usher ADR-0023's amendment, #167).
+	if result.User.ID != "1" {
+		t.Errorf("result.User.ID = %q, want the user the password was checked against", result.User.ID)
 	}
 }
 
@@ -105,9 +110,12 @@ func TestAuthenticator_Attempt_UnknownIdentifierFails(t *testing.T) {
 	store := newFakeUserStore() // empty
 	auth := newTestAuthenticator(t, store)
 
-	_, err := auth.Attempt(context.Background(), "nobody@example.com", "anything")
+	result, err := auth.Attempt(context.Background(), "nobody@example.com", "anything")
 	if !errors.Is(err, ErrLoginFailed) {
 		t.Fatalf("Attempt for an unknown identifier = %v, want ErrLoginFailed", err)
+	}
+	if result != (LoginResult{}) {
+		t.Errorf("result for an unknown identifier = %+v, want empty", result)
 	}
 }
 
