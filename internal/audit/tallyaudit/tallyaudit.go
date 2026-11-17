@@ -181,6 +181,11 @@ func (r *Recorder) Record(ctx context.Context, rec audit.Record) error {
 		ev.Actor = tally.System()
 	}
 	if _, err := r.log.Append(ctx, ev); err != nil {
+		if errors.Is(err, tally.ErrPoisoned) || r.poisoned.Load() {
+			// Nothing in this process can reach the log again (tally's
+			// ADR-0009): say so, so a retry stops (audit.Reductions).
+			return fmt.Errorf("tallyaudit: %w: %w", audit.ErrRecorderDown, err)
+		}
 		return fmt.Errorf("tallyaudit: %w", err)
 	}
 	return nil

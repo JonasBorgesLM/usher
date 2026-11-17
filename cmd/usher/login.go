@@ -35,9 +35,10 @@ type loginHandler struct {
 	sessions   session.SessionStore
 	challenges session.ChallengeStore
 	protector  *csrf.Protector
-	emitter    audit.Emitter  // RF-09; nil is valid and simply emits nothing
-	recorder   audit.Recorder // ADR-0023; a login is recorded before its session exists
-	issuer     string         // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
+	emitter    audit.Emitter     // RF-09; nil is valid and simply emits nothing
+	recorder   audit.Recorder    // ADR-0023; a login is recorded before its session exists
+	reductions *audit.Reductions // ADR-0023; a failed login is recorded without blocking
+	issuer     string            // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
 
 	idleTTL, absoluteTTL time.Duration
 	now                  func() time.Time
@@ -183,6 +184,15 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, identity.ErrLoginFailed):
 		h.emit(r, audit.EventLoginAttempt, audit.OutcomeFailure, canonical)
+		// ADR-0023's amendment (#167): recorded in tally, since login's
+		// rate limits bound how many an attacker can cause. The subject is
+		// the user the password was checked against, or none: the typed
+		// identifier never enters the log or the vault, where an attacker
+		// could make it grow at will.
+		h.reductions.Record(r.Context(), audit.Record{
+			ID: audit.NewRecordID(), Type: audit.EventLoginAttempt, Outcome: audit.OutcomeFailure,
+			Subject: result.User.ID, SourceAddr: r.RemoteAddr, At: h.now(),
+		})
 		h.render(w, r, loginPageData{Challenge: challenge, Error: genericLoginError})
 		return
 	default:

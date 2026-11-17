@@ -197,6 +197,7 @@ func testDeps(t testing.TB) routerDeps {
 	if err != nil {
 		t.Fatalf("csrf.New: %v", err)
 	}
+	recorder := audit.NewMemoryRecorder()
 	return routerDeps{
 		Authenticator:      auth,
 		Sessions:           newFakeSessionStore(),
@@ -212,7 +213,8 @@ func testDeps(t testing.TB) routerDeps {
 		AccessTokenTTL:     5 * time.Minute,
 		SessionIdleTTL:     time.Hour,
 		SessionAbsoluteTTL: 24 * time.Hour,
-		Recorder:           audit.NewMemoryRecorder(),
+		Recorder:           recorder,
+		Reductions:         audit.NewReductions(recorder, nil),
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 }

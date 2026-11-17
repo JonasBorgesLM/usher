@@ -185,7 +185,7 @@ func severityFor(e Event) (number int, text string) {
 	switch e.Type {
 	case EventRefreshReuse, EventCodeReplay:
 		return 17, "ERROR"
-	case EventLoginAttempt, EventConsentGranted, EventTokenIssued, EventRevocation, EventRateLimited, EventGatewayRejected:
+	case EventLoginAttempt, EventConsentGranted, EventTokenIssued, EventRevocation, EventLogout, EventRateLimited, EventGatewayRejected:
 		// Every other event type falls through to the generic
 		// Outcome-based mapping below.
 	}

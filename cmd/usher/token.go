@@ -40,6 +40,7 @@ type tokenHandler struct {
 	families           oauth.FamilyStore
 	emitter            audit.Emitter // RF-09; nil emits nothing
 	recorder           audit.Recorder
+	reductions         *audit.Reductions
 	keyset             *keys.Keyset
 	issuer             string
 	accessTokenTTL     time.Duration
@@ -278,6 +279,14 @@ func (h *tokenHandler) handleRefreshToken(w http.ResponseWriter, r *http.Request
 	next := oauth.RefreshToken{Hash: sha256.Sum256([]byte(nextRaw)), FamilyID: fam.ID, ExpiresAt: h.now().Add(h.refreshIdleTTL)}
 
 	if rotateErr := oauth.RotateRefreshToken(r.Context(), h.families, h.emitter, hash, next); rotateErr != nil {
+		if errors.Is(rotateErr, oauth.ErrRefreshReuse) {
+			// RS-11 revoked the family: a reduction, recorded without
+			// blocking it (ADR-0023).
+			h.reductions.Record(r.Context(), audit.Record{
+				ID: audit.NewRecordID(), Type: audit.EventRefreshReuse, Outcome: audit.OutcomeFailure,
+				Subject: fam.Subject, ClientID: client.ID, SourceAddr: r.RemoteAddr, At: h.now(),
+			})
+		}
 		if errors.Is(rotateErr, oauth.ErrInvalidGrant) {
 			h.writeError(w, http.StatusBadRequest, "invalid_grant")
 			return

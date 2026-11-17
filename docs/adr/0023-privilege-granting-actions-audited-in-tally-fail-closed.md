@@ -250,3 +250,33 @@ consumption, refresh rotation), since a denied issuance must still consume
 what it was presented; before the token, the consent row or the session
 reaches anyone. What a denied grant leaves behind (a consumed code, a family
 whose new token nobody received) grants nothing, and the client starts over.
+
+## Amendment — reductions, informational events, and what an attacker can flood (#167)
+
+Two parts of Decision 2 are narrowed, both found by writing them.
+
+**Only bounded informational events are recorded.** The table recorded
+rate-limit rejections and tokens rejected at the gateway. An unauthenticated
+attacker causes those without limit, and each is a durable append: recording
+them lets the attacker fill the audit volume, which poisons the log and then
+denies every grant on the replica. They go to `crier` only. **Failed logins
+are recorded**, since login's rate limits (RS-22) bound them, with the user
+the password was checked against as the subject, or **no subject** when the
+identifier names nobody: the typed identifier never enters the log or the
+vault, where it would grow at an attacker's will. `identity.Authenticator`
+returns that user beside `ErrLoginFailed`; the response is unchanged.
+
+**A retry cannot reach a poisoned log.** `tally` refuses every append after a
+write or fsync error until it is reopened (`tally`'s ADR-0009), so "retry with
+the same ID" helps only a transient failure: a context that ended mid-append, an
+unknown outcome. `audit.Reductions` records each reduction after it executes:
+one attempt, then up to three in the background with the same ID, stopping at
+once on `audit.ErrRecorderDown`, which the adapter returns for a poisoned log.
+A record it gives up on is logged at error level with its ID, type, client and
+time, and never its subject or address, so the alarm does not become a second,
+unprotected trail of people. **Residual, accepted:** with the log poisoned, a
+reduction is executed and not recorded until an operator reconstructs it from
+that alarm. The reopening criterion above, a spool, still applies.
+
+What is recorded as a reduction: `/revoke` (an access token or a refresh
+family), a family revoked for reuse (`oauth.ErrRefreshReuse`), and logout.

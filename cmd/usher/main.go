@@ -200,7 +200,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open the audit log: %w", err)
 	}
-	closeRecorder := sync.OnceValue(recorder.Close)
+	// Reductions retries in the background; the log closes after them.
+	reductions := audit.NewReductions(recorder, logger)
+	closeRecorder := sync.OnceValue(func() error {
+		reductions.Wait()
+		return recorder.Close()
+	})
 	defer func() {
 		if cerr := closeRecorder(); cerr != nil {
 			logger.Error("close the audit log", "error", cerr)
@@ -241,6 +246,7 @@ func run() error {
 		LoginLimiter:         loginLimiter,
 		Emitter:              emitter,
 		Recorder:             recorder,
+		Reductions:           reductions,
 		ReadinessChecks:      readinessChecks(pool, redisClient, keyset, recorder),
 		Clients:              clients,
 		AuthorizeLimiter:     authorizeLimiter,

@@ -124,8 +124,15 @@ func (a *Authenticator) Attempt(ctx context.Context, identifier, password string
 	if err != nil {
 		return LoginResult{}, err
 	}
-	if !ok || !valid {
+	if !ok {
 		return LoginResult{}, ErrLoginFailed
+	}
+	if !valid {
+		// The user the password was checked against, beside the error, for
+		// the audit record of a failed login (ADR-0023's amendment, #167).
+		// The caller still answers ErrLoginFailed's one generic response,
+		// and this branch costs what the other does: both ran Verify.
+		return LoginResult{User: u}, ErrLoginFailed
 	}
 	return LoginResult{User: u}, nil
 }
