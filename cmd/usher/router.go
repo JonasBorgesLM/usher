@@ -52,6 +52,12 @@ type routerDeps struct {
 	CSRFProtector *csrf.Protector
 	LoginLimiter  *ratelimit.Limiter // REQUIREMENTS §7.2's IP axis for /login
 	Emitter       audit.Emitter      // RF-09; nil emits nothing
+	// Recorder is ADR-0023's durable audit path. Never nil: every privilege
+	// grant is recorded before it takes effect and denied when it cannot
+	// be, so a nil Recorder would be a router that grants nothing --
+	// newRouter panics on it, the same "programming mistake, not runtime
+	// condition" reasoning as its template.Must calls.
+	Recorder audit.Recorder
 
 	ReadinessChecks []ReadinessCheck // RNF-10's /readyz dependencies
 
@@ -173,12 +179,17 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:       deps.Logger,
 	}
 
+	if deps.Recorder == nil {
+		panic("router: routerDeps.Recorder is nil; ADR-0023 records every privilege grant")
+	}
+
 	login := &loginHandler{
 		auth:         deps.Authenticator,
 		sessions:     deps.Sessions,
 		challenges:   deps.Challenges,
 		protector:    deps.CSRFProtector,
 		emitter:      deps.Emitter,
+		recorder:     deps.Recorder,
 		issuer:       deps.Issuer,
 		idleTTL:      deps.SessionIdleTTL,
 		absoluteTTL:  deps.SessionAbsoluteTTL,
@@ -196,6 +207,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 		challenges:  deps.Challenges,
 		consents:    deps.Consents,
 		codes:       deps.Codes,
+		recorder:    deps.Recorder,
 		protector:   deps.CSRFProtector,
 		issuer:      deps.Issuer,
 		codeTTL:     deps.AuthCodeTTL,
@@ -210,6 +222,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 		codes:              deps.Codes,
 		families:           deps.Families,
 		emitter:            deps.Emitter,
+		recorder:           deps.Recorder,
 		keyset:             deps.Keyset,
 		issuer:             deps.Issuer,
 		accessTokenTTL:     deps.AccessTokenTTL,

@@ -231,3 +231,22 @@ One map and one shred per person, at the cost of a new cryptographic component
 in usher, with its own ADR and its own way to fail. Reopen if cross-replica
 linkage of a person's records, or the cost of shredding on every replica,
 becomes a real need.
+
+## Amendment — the subject is the user ID (#166)
+
+Decision 3 keyed the vault by RS-35's canonical login identifier. Wiring the
+grants showed it cannot be: `/token` and `/consent` know the user ID, the
+`sub` every token carries, and not the identifier the user logged in with.
+Keying by the identifier would also give one person two refs whenever their
+email changed.
+
+**Decision:** a `Record`'s subject, and so the vault's key, is the user ID.
+Every grant knows it, it never changes, and a shred is requested for the
+user it names. Failed logins, which have no user ID, are the next step's
+question (#167).
+
+**Where each grant is recorded:** after the steps that detect abuse (code
+consumption, refresh rotation), since a denied issuance must still consume
+what it was presented; before the token, the consent row or the session
+reaches anyone. What a denied grant leaves behind (a consumed code, a family
+whose new token nobody received) grants nothing, and the client starts over.

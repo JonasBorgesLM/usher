@@ -35,8 +35,9 @@ type loginHandler struct {
 	sessions   session.SessionStore
 	challenges session.ChallengeStore
 	protector  *csrf.Protector
-	emitter    audit.Emitter // RF-09; nil is valid and simply emits nothing
-	issuer     string        // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
+	emitter    audit.Emitter  // RF-09; nil is valid and simply emits nothing
+	recorder   audit.Recorder // ADR-0023; a login is recorded before its session exists
+	issuer     string         // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
 
 	idleTTL, absoluteTTL time.Duration
 	now                  func() time.Time
@@ -190,6 +191,21 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0023: login success is a grant (its amendment, #161): the session
+	// it creates later grants tokens without a password. Recorded before
+	// the session exists, and denied when it cannot be.
+	if err := h.recorder.Record(r.Context(), audit.Record{
+		ID:         audit.NewRecordID(),
+		Type:       audit.EventLoginAttempt,
+		Outcome:    audit.OutcomeSuccess,
+		Subject:    result.User.ID,
+		SourceAddr: r.RemoteAddr,
+		At:         h.now(),
+	}); err != nil {
+		h.logger.ErrorContext(r.Context(), "login: audit record failed; login denied", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	h.completeLogin(w, r, challenge, result.User.ID)
 }
 

@@ -212,6 +212,7 @@ func testDeps(t testing.TB) routerDeps {
 		AccessTokenTTL:     5 * time.Minute,
 		SessionIdleTTL:     time.Hour,
 		SessionAbsoluteTTL: 24 * time.Hour,
+		Recorder:           audit.NewMemoryRecorder(),
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 }

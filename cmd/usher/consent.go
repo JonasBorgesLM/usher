@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/JonasBorgesLM/moat/csrf"
+	"github.com/JonasBorgesLM/usher/internal/audit"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/oauth"
 	"github.com/JonasBorgesLM/usher/internal/session"
@@ -27,6 +28,7 @@ type consentHandler struct {
 	challenges session.ChallengeStore
 	consents   oauth.ConsentStore
 	codes      oauth.CodeStore
+	recorder   audit.Recorder // ADR-0023; a consent is recorded before it is stored
 	protector  *csrf.Protector
 	issuer     string
 	codeTTL    time.Duration
@@ -129,6 +131,21 @@ func (h *consentHandler) post(w http.ResponseWriter, r *http.Request) {
 	granted, _, err := h.consents.Granted(r.Context(), challenge.Subject, challenge.ClientID)
 	if err != nil {
 		h.logger.ErrorContext(r.Context(), "consent: look up prior grant", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// ADR-0023: a consent is a grant, recorded before it is stored and
+	// denied when it cannot be. No consent row, no code.
+	if err := h.recorder.Record(r.Context(), audit.Record{
+		ID:         audit.NewRecordID(),
+		Type:       audit.EventConsentGranted,
+		Outcome:    audit.OutcomeSuccess,
+		Subject:    challenge.Subject,
+		ClientID:   challenge.ClientID,
+		SourceAddr: r.RemoteAddr,
+		At:         h.now(),
+	}); err != nil {
+		h.logger.ErrorContext(r.Context(), "consent: audit record failed; consent denied", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

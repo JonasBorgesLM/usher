@@ -39,6 +39,7 @@ type tokenHandler struct {
 	codes              oauth.CodeStore
 	families           oauth.FamilyStore
 	emitter            audit.Emitter // RF-09; nil emits nothing
+	recorder           audit.Recorder
 	keyset             *keys.Keyset
 	issuer             string
 	accessTokenTTL     time.Duration
@@ -190,6 +191,10 @@ func (h *tokenHandler) handleAuthorizationCode(w http.ResponseWriter, r *http.Re
 		idToken = string(signed)
 	}
 
+	if !h.recordIssuance(w, r, issued.Subject, client.ID) {
+		return
+	}
+
 	// RF-02 Flow 2 steps 6-7: a client whose grant_types include
 	// refresh_token also gets one, and the code that produced it is
 	// tombstoned against the new family only now, after issuance
@@ -288,6 +293,9 @@ func (h *tokenHandler) handleRefreshToken(w http.ResponseWriter, r *http.Request
 		h.writeError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
+	if !h.recordIssuance(w, r, fam.Subject, client.ID) {
+		return
+	}
 
 	// RF-03 does not require re-issuing an id_token on refresh (OIDC
 	// Core itself leaves it optional), and nothing cites a reason to
@@ -332,6 +340,9 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 		h.writeError(w, http.StatusInternalServerError, "server_error")
 		return
 	}
+	if !h.recordIssuance(w, r, "", client.ID) {
+		return
+	}
 
 	// No refresh_token (#49's own second done-when): this grant has no
 	// issuance path for one at all, unlike authorization_code's
@@ -342,6 +353,34 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 	// describe one on behalf of, and this handler never calls
 	// issueIDToken regardless of scope.
 	h.writeSuccess(w, r, accessToken, "", "", scope)
+}
+
+// recordIssuance records a token issuance before any token reaches the
+// client, and answers server_error when it cannot (ADR-0023, Decision 2:
+// a grant fails closed). It reports whether the issuance may proceed.
+// subject is "" for client_credentials, where the client is the actor.
+//
+// It runs after the steps that detect abuse (code consumption, refresh
+// rotation), since a denied issuance must still consume what it was
+// presented; what those steps leave behind for a denied grant -- a consumed
+// code, a rotated family whose new token nobody received -- grants nothing.
+// The client starts over.
+func (h *tokenHandler) recordIssuance(w http.ResponseWriter, r *http.Request, subject, clientID string) bool {
+	err := h.recorder.Record(r.Context(), audit.Record{
+		ID:         audit.NewRecordID(),
+		Type:       audit.EventTokenIssued,
+		Outcome:    audit.OutcomeSuccess,
+		Subject:    subject,
+		ClientID:   clientID,
+		SourceAddr: r.RemoteAddr,
+		At:         h.now(),
+	})
+	if err != nil {
+		h.logger.ErrorContext(r.Context(), "token: audit record failed; issuance denied", "error", err)
+		h.writeError(w, http.StatusInternalServerError, "server_error")
+		return false
+	}
+	return true
 }
 
 // issueAccessToken signs a fresh access token for subject under client,

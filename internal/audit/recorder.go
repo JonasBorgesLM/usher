@@ -18,9 +18,12 @@ type Record struct {
 	ID      string
 	Type    EventType
 	Outcome Outcome
-	// Subject is the canonical login identifier (RS-35), or "". A Recorder
+	// Subject is the user ID, the same `sub` every token carries, or "". It
+	// is the one identifier every grant knows: /token and /consent have the
+	// user ID and not the login identifier, and an email change would split
+	// one person into two refs (ADR-0023's amendment, #166). A Recorder
 	// never stores it in clear: the tally adapter replaces it with a random
-	// SubjectRef from its vault (ADR-0023, Decision 3).
+	// SubjectRef from its vault (Decision 3).
 	Subject  string
 	ClientID string
 	// SourceAddr is the client's address, or "". It is personal data, so a
