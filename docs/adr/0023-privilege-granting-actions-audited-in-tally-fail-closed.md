@@ -280,3 +280,38 @@ that alarm. The reopening criterion above, a spool, still applies.
 
 What is recorded as a reduction: `/revoke` (an access token or a refresh
 family), a family revoked for reuse (`oauth.ErrRefreshReuse`), and logout.
+
+## Amendment — the latency budget, measured (#171)
+
+The acceptance left `/token`'s budget provisional at 10 ms added to its p99,
+until `sapper` measured it (JonasBorgesLM/tally#54). It has, on the real stack,
+in the "Audit log" workflow: `/token` with `client_credentials`, concurrency
+10, 30 s sustained after a warm-up, 3 runs, every request a durable append
+before its token returns (`docs/security/sapper-token-audit-report.txt`).
+
+| Where | `/token` p99 | log batch fsync p50 / p99 / max |
+| --- | --- | --- |
+| GitHub runner, run 1 | 13.5 ms ±0.6 | 0.39 / 3.32 / 7.2 ms |
+| GitHub runner, run 2 | 8.4 ms ±0.2 | 0.31 / 1.68 / 45 ms |
+| Docker Desktop, Apple M1 | 16.0 ms ±1.6 | 0.76 / 4.97 / 78 ms |
+
+No response failed in any run, and every log written under that load verified
+intact against its spool.
+
+**What is measured and what is not.** The `Recorder` is required, so there is
+no `/token` without it to subtract: the latency it adds is not measured
+directly. What is measured is the whole of `/token`, and the log's own fsync,
+reported by the adapter at close. An append waits for the batch in flight, the
+2 ms batching delay, and its own fsync (`tally`'s `docs/BENCHMARKS.md`): with
+the worst fsync p99 above, 3.3 ms, about 2 + 2 × 3.3 ≈ 8.6 ms, inside 10 ms. On
+the Mac's VM, with a 5 ms fsync p99 and a timer that fires late, it would not
+be.
+
+**Decision:** the budget stays at **10 ms**, now stated with its condition: it
+holds on a volume whose fsync p99 is under about 4 ms, which the adapter's
+close log shows for any deployment. The scenario asserts what can be asserted
+end to end, `/token`'s p99 under 50 ms, as an advisory check on a shared runner.
+
+**Reopen** when a deployment's close log reports a fsync p99 above 4 ms, or the
+scenario's p99 fails on a runner that previously passed.
+

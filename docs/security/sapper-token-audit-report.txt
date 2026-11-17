@@ -1,0 +1,38 @@
+sapper /token load with the tally audit log — 2026-11-17, GitHub-hosted
+ubuntu-latest runner (ADR-0023, #171, JonasBorgesLM/tally#54)
+
+Produced by .github/scripts/check-token-audit-load.sh in the "Audit log"
+workflow, run 44001218629 on PR #172, commit 6781e20.
+sapper-token-audit-result.json beside this file is that run's result.
+
+Scenario docs/security/sapper-token-audit.yaml: POST /token,
+client_credentials, concurrency 10, 30 s sustained after a 5 s warm-up,
+3 runs. Every request is a durable tally append before the token returns.
+
+--- sapper ---
+run "usher-token-with-audit-log" (sustained) → <out>/token-audit.json
+  p99 mean 8.401403ms (±218.47µs over 3 runs), error rate 0.0000
+  verdict: PASS (run `sapper assert --in <out>/token-audit.json` to gate)
+  [ok] p99_under: < 50ms
+  [ok] error_rate_under: < 0.01
+  [ok] status_absent: status 500 observed 0 times in 195583 responses
+
+--- the audit log's own share: its batches' store time, fsync included ---
+{"time":"2026-11-17T02:15:39.884504646Z","level":"INFO","msg":"audit log closed","batches":33706,"entries":227348,"sync_p50_ms":0.311,"sync_p99_ms":1.675,"sync_max_ms":45.191}
+
+--- the log written under that load, verified against its spool ---
+size 227349
+attested 227349
+unattested 0
+result intact
+
+--- the earlier run on the same PR (54b0f47), for the noise ---
+/token p99 mean 13.46 ms (±0.59 over 3 runs), 0 errors in 122393 responses;
+batches 27137, entries 142913, sync p50 0.386 ms, p99 3.318 ms, max 7.193 ms.
+(Its verification step failed on file permissions, fixed in 6781e20; the
+load and the log statistics are unaffected.)
+
+--- local, Docker Desktop on an Apple M1 (a Linux VM) ---
+/token p99 mean 16.01 ms (±1.57), 0 errors in 137983 responses;
+batches 24417, entries 161556, sync p50 0.76 ms, p99 4.97 ms, max 78.4 ms;
+161557 entries intact.

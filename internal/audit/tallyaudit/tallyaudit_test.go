@@ -371,3 +371,49 @@ func TestReplicasAreSeparate(t *testing.T) {
 		t.Fatal("the same person has the same ref on both replicas")
 	}
 }
+
+// The adapter keeps the log's batch fsync times, so the log's share of a
+// grant's latency can be measured (ADR-0023's budget): every record is in a
+// counted batch, and the percentiles are real durations.
+//
+// Seen failing with Batch left empty: no batch counted.
+func TestSyncStats(t *testing.T) {
+	ctx := context.Background()
+	r, err := Open(ctx, testConfig(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	// tally.Open writes the genesis itself, not through Observer.Batch.
+	if s := r.SyncStats(); s.Batches != 0 || s.Entries != 0 {
+		t.Fatalf("after Open = %+v, want nothing counted", s)
+	}
+	const n = 20
+	for range n {
+		if err = r.Record(ctx, login("user-1", "web-app", "")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := r.SyncStats()
+	if s.Entries != n || s.Batches < 1 || s.Batches > n {
+		t.Fatalf("stats = %+v, want %d entries in 1..%d batches", s, n, n)
+	}
+	if s.P50 <= 0 || s.P99 < s.P50 || s.Max < s.P99 {
+		t.Fatalf("stats = %+v, want 0 < p50 <= p99 <= max", s)
+	}
+}
+
+// The ring keeps the most recent samples, and the counts keep everything.
+func TestSyncStatsRing(t *testing.T) {
+	var s syncStats
+	for i := range syncSamples + 10 {
+		s.add(1, time.Duration(i+1))
+	}
+	got := s.snapshot()
+	if got.Batches != syncSamples+10 || len(s.samples) != syncSamples || got.Max != time.Duration(syncSamples+10) {
+		t.Fatalf("stats = %+v with %d samples", got, len(s.samples))
+	}
+	if got.P50 < 11 {
+		t.Fatalf("p50 = %v: the oldest samples were not overwritten", got.P50)
+	}
+}

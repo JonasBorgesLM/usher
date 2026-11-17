@@ -38,7 +38,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
 | [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
 | [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151), [Amendment (implemented)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--implemented-152-153-154), [Amendment (#165)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--usher-is-a-statefulset-for-its-audit-log-165) |
-| [`0023`](0023-privilege-granting-actions-audited-in-tally-fail-closed.md) | Privilege-granting actions are recorded in `tally` before they take effect, and fail closed | Accepted — supersedes part of ADR-0017 | [Amendment (#161)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--accepted-161), [Amendment (#165)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--one-log-and-one-vault-per-replica-165), [Amendment (#166)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--the-subject-is-the-user-id-166), [Amendment (#167)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--reductions-informational-events-and-what-an-attacker-can-flood-167) |
+| [`0023`](0023-privilege-granting-actions-audited-in-tally-fail-closed.md) | Privilege-granting actions are recorded in `tally` before they take effect, and fail closed | Accepted — supersedes part of ADR-0017 | [Amendment (#161)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--accepted-161), [Amendment (#165)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--one-log-and-one-vault-per-replica-165), [Amendment (#166)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--the-subject-is-the-user-id-166), [Amendment (#167)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--reductions-informational-events-and-what-an-attacker-can-flood-167), [Amendment (#171)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--the-latency-budget-measured-171) |
 
 ## Reopening criteria on the record
 
@@ -63,8 +63,7 @@ decided is the one that gets implemented by accident.
 | --- | --- | --- |
 
 None currently open. ADR-0023 (`tally`) was listed here while Proposed and was
-accepted in #161, its latency budget provisional until JonasBorgesLM/tally#54
-measures it. ADR-0022 (Kubernetes) was listed here while Proposed and
+accepted in #161; its latency budget was measured in #171. ADR-0022 (Kubernetes) was listed here while Proposed and
 was accepted in #151. The earlier entry this table held — whether
 `Clear-Site-Data: "cookies"` on logout may clear the whole registrable
 domain — was decided in [ADR-0021](0021-clear-site-data-omits-cookies-on-logout.md) (#48).

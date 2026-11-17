@@ -1,0 +1,98 @@
+# ADR-0023's audit log against the real stack (JonasBorgesLM/tally#54, #171).
+# The work is in .github/scripts/, so it runs locally exactly as here.
+#
+# - token-load: sapper loads /token with client_credentials issuances, each
+#   recorded durably in tally, and asserts the p99 in
+#   docs/security/sapper-token-audit.yaml; then prints the audit log's own
+#   batch fsync p99 and verifies the log written under that load.
+# - tamper: a real flow's log is altered and truncated, CRCs recomputed, and
+#   tally verify must exit 1 on each, 0 on the untouched log.
+#
+# Advisory, like fault-injection.yml (#124): a separate workflow, outside
+# CI's `CI OK`, since a p99 in milliseconds on a shared runner can miss by a
+# hair. The tamper job has no such noise, but shares the stack's cost.
+#
+# sapper is pinned to an exact commit, upgraded by hand (ADR-0011,
+# ADR-0016). This one is later than fault-injection.yml's: request bodies
+# and headers (sapper #61) are what let it POST to /token.
+name: Audit log
+
+on:
+  pull_request:
+    paths:
+      - "internal/audit/**"
+      - "internal/oauth/**"
+      - "cmd/usher/**"
+      - "go.mod"
+      - "docker-compose.yml"
+      - "Dockerfile.usher"
+      - "clients.dev.json"
+      - "scripts/dev-access-token.sh"
+      - "docs/security/sapper-token-audit.yaml"
+      - "docs/security/sapper-config.yaml"
+      - ".github/scripts/check-token-audit-load.sh"
+      - ".github/scripts/check-audit-tamper.sh"
+      - ".github/workflows/audit-log.yml"
+  schedule:
+    - cron: "53 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-log-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOEXPERIMENT: jsonv2
+  GO_VERSION: "1.27.4" # the floor after #163
+  GOFLAGS: -mod=readonly
+  SAPPER_REF: c804130933d095b2e9cc763f81201e5ce2869389 # sapper main after #61 (request bodies)
+
+jobs:
+  token-load:
+    name: sapper /token load with the audit log
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+      - name: Check out sapper at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: JonasBorgesLM/sapper
+          ref: ${{ env.SAPPER_REF }}
+          path: .sapper
+          persist-credentials: false
+      - name: Build sapper
+        working-directory: .sapper
+        run: go build -o "$RUNNER_TEMP/sapper" ./cmd/sapper
+      - name: ./.github/scripts/check-token-audit-load.sh
+        env:
+          SAPPER: ${{ runner.temp }}/sapper
+          OUT_DIR: ${{ runner.temp }}/token-load
+        run: ./.github/scripts/check-token-audit-load.sh
+      - name: Keep the results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sapper-token-audit-results
+          path: ${{ runner.temp }}/token-load/
+          if-no-files-found: ignore
+
+  tamper:
+    name: tampering with the audit log is detected
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+      - name: ./.github/scripts/check-audit-tamper.sh
+        run: ./.github/scripts/check-audit-tamper.sh

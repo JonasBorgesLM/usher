@@ -1,0 +1,30 @@
+# /token under sustained load with ADR-0023's audit log in the path
+# (JonasBorgesLM/tally#54, #171): every request is a client_credentials
+# issuance, recorded durably in tally before the token is returned, so this
+# measures a grant's latency with its record. Run by
+# .github/scripts/check-token-audit-load.sh, which registers the
+# `sapper-load` client in a temporary registry; the committed one does not
+# have it.
+#
+# The SLO is end to end, on a shared CI runner. What the log itself costs is
+# measured separately: the adapter logs its batches' fsync p99 when usher
+# closes, and the script prints it beside sapper's report.
+name: usher-token-with-audit-log
+profile:
+  type: sustained
+  concurrency: 10
+  duration: 30s
+  warmup: 5s
+request:
+  method: POST
+  path: /token
+  headers:
+    # sapper-load:sapper-load-secret-dev-only, a dev-only credential that
+    # exists only in the script's temporary registry.
+    Authorization: Basic c2FwcGVyLWxvYWQ6c2FwcGVyLWxvYWQtc2VjcmV0LWRldi1vbmx5
+    Content-Type: application/x-www-form-urlencoded
+  body: "grant_type=client_credentials&scope=widgets%3Aread"
+slos:
+  p99_under: 50ms
+  error_rate_under: 0.01
+  status_absent: 500
