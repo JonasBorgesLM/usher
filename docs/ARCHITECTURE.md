@@ -605,7 +605,7 @@ type Record struct {
 	ID         string
 	Type       EventType
 	Outcome    Outcome
-	Subject    string // canonical identifier; never stored in clear
+	Subject    string // the user ID, the tokens' sub; never stored in clear
 	ClientID   string
 	SourceAddr string // stored only sealed under the subject's key
 	At         time.Time
@@ -623,6 +623,12 @@ type Recorder interface {
 in `/readyz`, and closes it after the server drains, so the closing
 checkpoint covers every request answered. Each replica has its own log, key,
 origin and vault (ADR-0023's amendment, #165).
+
+The grants are recorded through it before they take effect, and denied with
+`server_error` (or a 500 page) when the record fails: token issuance in all
+three grants (`tokenHandler.recordIssuance`), consent before its row is
+stored, and login success before its session exists. `newRouter` refuses a
+nil `Recorder`, so a router cannot be built that grants without recording.
 
 ---
 

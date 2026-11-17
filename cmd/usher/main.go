@@ -240,6 +240,7 @@ func run() error {
 		CSRFProtector:        csrfProtector,
 		LoginLimiter:         loginLimiter,
 		Emitter:              emitter,
+		Recorder:             recorder,
 		ReadinessChecks:      readinessChecks(pool, redisClient, keyset, recorder),
 		Clients:              clients,
 		AuthorizeLimiter:     authorizeLimiter,
