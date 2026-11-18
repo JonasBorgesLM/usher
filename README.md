@@ -149,9 +149,38 @@ mounts. Then:
 6. **Against the anchor's copy, it is detected:** `TruncatedBelowCheckpoint`, exit 1.
 
 The containers share one machine, so whoever has root here has the anchor's volume too.
-On real hardware the anchor is another machine (`tally` plans a second Raspberry Pi) that
-the host holds no credential to. The same pull, there, **not yet executed on a second
-machine**:
+On real hardware the anchor is another machine that the host holds no credential to.
+
+### With a second machine as the anchor
+
+Run on a Raspberry Pi 5 on 2026-11-18 (`tally`#125). With `ANCHOR_SSH` set, the demo uses
+another machine instead of the `anchor` container. `docker-compose.pi.yml` publishes the spool
+on port 2222, and the demo adds a step 7:
+
+```bash
+# Once, on the anchor machine: a user that owns the copy and the pull key.
+sudo useradd -m -s /bin/bash anchor
+sudo -u anchor sh -c 'umask 077; mkdir -p ~/copy ~/.ssh && ssh-keygen -t ed25519 -N "" -f ~/.ssh/usher-pull'
+
+# On this machine: ANCHOR_SSH is your own login to the anchor machine, used only to start
+# each pull and fetch the copy for the auditor; ANCHOR_SPOOL_HOST is this machine's
+# address as the anchor machine reaches it.
+ANCHOR_SSH=pi@raspberrypi.local ANCHOR_SPOOL_HOST=192.168.10.18 ./scripts/demo-audit.sh
+```
+
+The pull runs as `anchor`, with its own key, which the spool allows `rrsync -ro` and nothing
+else. On the Pi, the rollback verified intact against the host's own spool, and was detected
+against the Pi's copy (`TruncatedBelowCheckpoint at 4: a checkpoint covers 6 leaves, the log
+holds 4`, exit 1). Step 7 then tries, from inside the stack, to log in to the Pi as
+`anchor`, `pi` and `root`. It uses the address, since a container cannot resolve the
+`.local` name and a failure to resolve would prove nothing. All three were refused by the
+Pi: `Permission denied`.
+
+**What this does not show:** the operator's own login, `ANCHOR_SSH`, is an administrator on
+the Pi. Here it sits on the same laptop as the Docker stack, outside the usher host as this
+demo draws it. A real deployment keeps no such credential on the usher host.
+
+The same pull, set up by hand, with cron on the anchor machine:
 
 ```bash
 # On the anchor machine: a key, and a pull every minute from cron.

@@ -1,0 +1,13 @@
+# The demo's anchor on a second machine (scripts/demo-audit.sh with
+# ANCHOR_SSH set; JonasBorgesLM/tally#125). An overlay on
+# docker-compose.yml and docker-compose.demo.yml.
+#
+# It publishes the spool's SSH server on port 2222 of this machine, so the
+# anchor machine can pull from it. What it serves is unchanged: one key, the
+# anchor machine's, allowed only `rrsync -ro` on the spool. That key's
+# private half never leaves the anchor machine.
+
+services:
+  spool:
+    ports:
+      - "2222:22"
