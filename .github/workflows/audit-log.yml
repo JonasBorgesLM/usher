@@ -7,6 +7,9 @@
 #   batch fsync p99 and verifies the log written under that load.
 # - tamper: a real flow's log is altered and truncated, CRCs recomputed, and
 #   tally verify must exit 1 on each, 0 on the untouched log.
+# - demo: scripts/demo-audit.sh, the README's end-to-end demo, so it keeps
+#   working from a clean checkout: a rollback the host's own spool accepts
+#   and the anchor's pulled copy detects.
 #
 # Advisory, like fault-injection.yml (#124): a separate workflow, outside
 # CI's `CI OK`, since a p99 in milliseconds on a shared runner can miss by a
@@ -30,6 +33,8 @@ on:
       - "scripts/dev-access-token.sh"
       - "docs/security/sapper-token-audit.yaml"
       - "docs/security/sapper-config.yaml"
+      - "docker-compose.demo.yml"
+      - "scripts/demo-audit.sh"
       - ".github/scripts/check-token-audit-load.sh"
       - ".github/scripts/check-audit-tamper.sh"
       - ".github/workflows/audit-log.yml"
@@ -96,3 +101,16 @@ jobs:
           cache-dependency-path: go.mod
       - name: ./.github/scripts/check-audit-tamper.sh
         run: ./.github/scripts/check-audit-tamper.sh
+
+  demo:
+    name: end-to-end demo, rollback detected by the anchor
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.mod
+      - name: ./scripts/demo-audit.sh
+        run: ./scripts/demo-audit.sh

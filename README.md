@@ -123,6 +123,52 @@ NetworkPolicies as part of the trusted-proxy configuration. `./k8s/up.sh` brings
 measures a rolling restart under load. What must not change silently is in
 [`.claude/rules/k8s-deploy.md`](.claude/rules/k8s-deploy.md).
 
+## End to end: the audit log and its anchor
+
+Every privilege grant is recorded in a [`tally`](https://github.com/JonasBorgesLM/tally) log
+before it takes effect
+([ADR-0023](docs/adr/0023-privilege-granting-actions-audited-in-tally-fail-closed.md)). What
+makes that log evidence is a copy of its checkpoints somewhere the host cannot rewrite. One
+command shows why, from a clean checkout:
+
+```bash
+./scripts/demo-audit.sh
+```
+
+It brings up the stack with two more containers (`docker-compose.demo.yml`): `spool`, which
+serves usher's spool read-only over SSH to a key that can only run `rrsync -ro`, and
+`anchor`, which pulls it with `rsync --ignore-existing` into a volume no host container
+mounts. Then:
+
+1. A login, consent and token flow; a snapshot of the log is taken.
+2. A second flow; the anchor pulls the checkpoints.
+3. The log verifies intact against the anchor's copy.
+4. Root on the host restores the snapshot: the log and its own spool, rolled back.
+5. **Against the host's spool, the rollback verifies intact.** A spool the host can write
+   proves nothing (`tally`'s threats T-08 and T-21).
+6. **Against the anchor's copy, it is detected:** `TruncatedBelowCheckpoint`, exit 1.
+
+The containers share one machine, so whoever has root here has the anchor's volume too.
+On real hardware the anchor is another machine (`tally` plans a second Raspberry Pi) that
+the host holds no credential to. The same pull, there, **not yet executed on a second
+machine**:
+
+```bash
+# On the anchor machine: a key, and a pull every minute from cron.
+ssh-keygen -t ed25519 -N '' -f ~/.ssh/usher-anchor
+rsync -r --ignore-existing -e "ssh -i ~/.ssh/usher-anchor" puller@usher-host:. /srv/anchor/usher-0/
+
+# On the usher host: that key may read the spool and nothing else.
+printf 'command="rrsync -ro /var/lib/usher/audit/anchor",restrict %s\n' "$(cat usher-anchor.pub)" \
+  >> ~puller/.ssh/authorized_keys
+
+# The auditor, with a copy of the log and the replica's verifier key:
+tally verify --dir ./usher-0-log --key "$(cat usher-0.pub)" --anchor /srv/anchor/usher-0
+```
+
+Without `-t`, each pulled file's time is when it arrived, which is what monitoring a silent
+host relies on (`tally`'s RUNBOOK, "Monitoring off the host").
+
 ## Testing
 
 ```bash
@@ -167,7 +213,8 @@ is a numbered requirement rather than an assumption:
 |---|---|---|
 | [`moat`](https://github.com/JonasBorgesLM/moat) | Edge security middleware | RI-01, ADR-0011 |
 | [`bastion`](https://github.com/JonasBorgesLM/bastion) | Circuit breaker on the proxy path | RI-02, ADR-0016 |
-| [`crier`](https://github.com/JonasBorgesLM/crier) | Receives the audit events | RI-03, ADR-0017 |
+| [`tally`](https://github.com/JonasBorgesLM/tally) | The audit log: every grant recorded before it takes effect | RI-03, ADR-0023 |
+| [`crier`](https://github.com/JonasBorgesLM/crier) | A best-effort copy of the audit events, for dashboards | RI-03, ADR-0017 |
 | [`warden`](https://github.com/JonasBorgesLM/warden), [`sapper`](https://github.com/JonasBorgesLM/sapper) | Verify the running stack: probes and load | RI-06 |
 | [`task-api`](https://github.com/JonasBorgesLM/task-api) | A later second resource server — not in the MVP | RI-05, ADR-0013 |
 
