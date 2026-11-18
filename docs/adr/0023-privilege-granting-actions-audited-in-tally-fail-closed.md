@@ -315,3 +315,18 @@ end to end, `/token`'s p99 under 50 ms, as an advisory check on a shared runner.
 **Reopen** when a deployment's close log reports a fsync p99 above 4 ms, or the
 scenario's p99 fails on a runner that previously passed.
 
+
+## Amendment — the pin moves to tally v0.1.0 (#175)
+
+The acceptance pinned a pseudo-version of `tally`'s `develop` until `v0.1.0`
+was tagged. It is tagged, released through `tally`'s release workflow with
+signed tags, reproducible binaries and build provenance, after a clean-session
+audit (`tally`'s `docs/AUDIT.md`). The pin moves to `v0.1.0`, still exact and
+still never bumped by a bot.
+
+One fix from that audit changes what an operator sees: `tally.Open` now
+refuses a log its own last stored checkpoint contradicts (`tally`'s A-01). A
+replica whose audit log was rewritten under it refuses to start, which is the
+fail-closed behaviour Decision 1 wants (RNF-05), and `tally`'s
+`docs/RUNBOOK.md` says what to do. Everything else in the audit was internal to
+`tally` or made its verifier stricter.
