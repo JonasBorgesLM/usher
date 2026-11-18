@@ -176,7 +176,7 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 	result, err := h.auth.Attempt(r.Context(), identifier, password)
 	switch {
 	case err == nil:
-		h.emit(r, audit.EventLoginAttempt, audit.OutcomeSuccess, canonical)
+		// Mirrored to crier below, once tally holds it (#177).
 	case errors.Is(err, identity.ErrRateLimited):
 		h.emit(r, audit.EventRateLimited, audit.OutcomeFailure, canonical)
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -216,6 +216,11 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// Only now, mirrored to crier (#177): emitted before the record, a
+	// denied login would show on a dashboard as a success (RI-03). The
+	// failures above are emitted at once instead, since each describes
+	// something that has already happened (ADR-0023's amendment).
+	h.emit(r, audit.EventLoginAttempt, audit.OutcomeSuccess, canonical)
 	h.completeLogin(w, r, challenge, result.User.ID)
 }
 
