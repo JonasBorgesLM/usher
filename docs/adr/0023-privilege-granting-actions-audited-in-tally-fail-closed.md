@@ -330,3 +330,21 @@ replica whose audit log was rewritten under it refuses to start, which is the
 fail-closed behaviour Decision 1 wants (RNF-05), and `tally`'s
 `docs/RUNBOOK.md` says what to do. Everything else in the audit was internal to
 `tally` or made its verifier stricter.
+
+## Amendment — what reaches crier, and when (#177)
+
+Decision 3 allows mirroring to `crier` an event already recorded. A successful
+login was emitted before its record, so a login denied because its record
+failed showed on a dashboard as a success. It is now emitted only after
+`tally` holds it, and never for a login that was denied.
+
+The other events that reach both stores keep being emitted at once: a failed
+login, a revocation, a logout and refresh-token reuse. Each describes an action
+that has already executed, so its `crier` event is true whether or not `tally`
+stores it in time. Holding it until a background retry succeeded was the option
+not taken: it would delay the reuse alert by seconds, and drop it when `tally`
+is down, which is when an operator most needs it. When such a record is never
+stored, `audit.Reductions` already says so at error level.
+
+**The rule, then:** a grant reaches `crier` only after `tally` recorded it; an
+action that has executed reaches `crier` whatever `tally` does.
