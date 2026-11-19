@@ -108,14 +108,14 @@ mkdir -p "$1"
 rsync -r --ignore-existing \
   -e "ssh -i .ssh/usher-pull -p 2222 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=.ssh/demo_known_hosts" \
   "puller@$2:." "$1/"
-echo "the anchor machine holds $(ls "$1" | wc -l) checkpoints"
+echo "the anchor machine holds $(ls "$1" | wc -l) checkpoint notes"
 REMOTE
     return
   fi
   compose exec -T anchor rsync -r --ignore-existing \
     -e "ssh -i /keys/anchor -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts" \
     puller@spool:. /anchor/
-  echo "the anchor holds $(compose exec -T anchor sh -c 'ls /anchor | wc -l' | tr -d ' ') checkpoints"
+  echo "the anchor holds $(compose exec -T anchor sh -c 'ls /anchor | wc -l' | tr -d ' ') checkpoint notes"
 }
 
 # anchor_copy <dest>: the anchor's copy, for the auditor.

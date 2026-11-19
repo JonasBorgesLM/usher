@@ -348,3 +348,16 @@ stored, `audit.Reductions` already says so at error level.
 
 **The rule, then:** a grant reaches `crier` only after `tally` recorded it; an
 action that has executed reaches `crier` whatever `tally` does.
+
+## Amendment — tally v0.2.0, before usher's first release with it (#180)
+
+tally v0.2.0 signs each checkpoint as two notes: a `tlog-checkpoint` with the root of a Merkle tree over the same
+leaves, and a `tally-heartbeat/v1` note with the head, the time and the state (`tally`'s ADR-0006 amendment). It is
+moved to before any usher release carries the audit log, because a v0.1 `tally verify` reads a v0.2 log as
+`MalformedRecord`: shipping v0.1 first would make every usher deployment go through tally's "upgrade the verifiers
+first" step a release later. As it is, every usher log is written in the v0.2 format from its first entry.
+
+What changes for usher's anchor: the spool holds two files per checkpoint, the `tlog-checkpoint` only when the
+size has grown, and the adapter's anchor queue, tally's default of 64, now holds 32 checkpoints. An auditor
+verifies with tally v0.2.0 or later. A witness (`tally`'s ADR-0021) is available and not deployed: requiring
+one is a further amendment, when a second machine runs it for usher.
