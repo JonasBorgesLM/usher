@@ -23,7 +23,7 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0005`](0005-argon2id-versioned-bounded.md) | Argon2id, versioned per record, under a concurrency bound | Accepted | — |
 | [`0006`](0006-explicit-middleware-composition.md) | Explicit middleware composition, not `preset.API` | Accepted | — |
 | [`0007`](0007-forward-original-token-rs-revalidates.md) | Forward the original token; the resource server re-validates | Accepted | — |
-| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | [Amendment (#139)](0008-go-floor-1-26-6.md#amendment--the-floor-moves-to-1272-for-go-2026-6617-139) |
+| [`0008`](0008-go-floor-1-26-6.md) | Go floor 1.26.6, inherited from `moat/redisstore` | Accepted | [Amendment (#139)](0008-go-floor-1-26-6.md#amendment--the-floor-moves-to-1272-for-go-2026-6617-139), [Amendment (#163)](0008-go-floor-1-26-6.md#amendment--the-floor-moves-to-1274-for-go-2026-6859-and-go-2026-6809-163) |
 | [`0009`](0009-record-tokenvalidator-signature-changes.md) | Record `tokenvalidator` signature changes every phase | Accepted | — |
 | [`0010`](0010-realip-topology-both-sides.md) | `realip` topology declared on both sides, never `0.0.0.0/0` | Accepted | [Amendment (#8)](0010-realip-topology-both-sides.md#amendment--the-compose-networks-concrete-range-8) |
 | [`0011`](0011-moat-trust-decision.md) | `moat` trusted as first-party, pinned exactly, never auto-upgraded | Accepted | — |
@@ -32,12 +32,13 @@ named `0000-` so it does not read as a decision or trip the index check.
 | [`0014`](0014-access-token-revocation-is-gateway-local.md) | Access-token revocation is gateway-local; the TTL bounds it elsewhere | Accepted | — |
 | [`0015`](0015-signing-keyset-custody-and-rotation.md) | Signing keys as a mounted keyset with explicit windows | Accepted | [Amendment (#3)](0015-signing-keyset-custody-and-rotation.md#amendment--accepted-3) |
 | [`0016`](0016-bastion-guards-the-proxy-path.md) | `bastion` guards the proxy path, under `bastion/ADR-0009` | Accepted | [Amendment (#118)](0016-bastion-guards-the-proxy-path.md#amendment--which-upstream-answers-count-as-failure-118), [Amendment (bastion v0.3.0)](0016-bastion-guards-the-proxy-path.md#amendment--retry-after-from-the-breakers-own-state-bastion-v030) |
-| [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2) |
+| [`0017`](0017-audit-events-ship-to-crier.md) | Audit events ship to `crier`, not Postgres | Accepted; failing closed, for privilege grants, superseded by ADR-0023 | [Amendment (#2)](0017-audit-events-ship-to-crier.md#amendment--accepted-2), [Amendment (#161)](0017-audit-events-ship-to-crier.md#amendment--failing-closed-for-privilege-grants-superseded-by-adr-0023-161) |
 | [`0018`](0018-embedded-forward-only-migrations.md) | Migrations are embedded SQL, forward-only, under an advisory lock | Accepted | — |
 | [`0019`](0019-x-text-for-identifier-canonicalization.md) | `golang.org/x/text` for identifier canonicalization (NFC + case folding) | Accepted | — |
 | [`0020`](0020-prompt-and-silent-reuse-decided-in-login-and-consent.md) | `prompt`/`max_age`'s silent-reuse decision lives in `/login` and `/consent`, not `/authorize` | Accepted | — |
 | [`0021`](0021-clear-site-data-omits-cookies-on-logout.md) | `/logout`'s `Clear-Site-Data` omits `cookies` — `cache` and `storage` only | Accepted | — |
-| [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151), [Amendment (implemented)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--implemented-152-153-154) |
+| [`0022`](0022-kubernetes-as-a-disposable-validation-cluster.md) | usher runs on Kubernetes as a disposable validation cluster, still one binary | Accepted | [Amendment (#151)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--accepted-151), [Amendment (implemented)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--implemented-152-153-154), [Amendment (#165)](0022-kubernetes-as-a-disposable-validation-cluster.md#amendment--usher-is-a-statefulset-for-its-audit-log-165) |
+| [`0023`](0023-privilege-granting-actions-audited-in-tally-fail-closed.md) | Privilege-granting actions are recorded in `tally` before they take effect, and fail closed | Accepted — supersedes part of ADR-0017 | [Amendment (#161)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--accepted-161), [Amendment (#165)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--one-log-and-one-vault-per-replica-165), [Amendment (#166)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--the-subject-is-the-user-id-166), [Amendment (#167)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--reductions-informational-events-and-what-an-attacker-can-flood-167), [Amendment (#171)](0023-privilege-granting-actions-audited-in-tally-fail-closed.md#amendment--the-latency-budget-measured-171) |
 
 ## Reopening criteria on the record
 
@@ -61,7 +62,8 @@ decided is the one that gets implemented by accident.
 | Question | Blocks | Where |
 | --- | --- | --- |
 
-None currently open. ADR-0022 (Kubernetes) was listed here while Proposed and
+None currently open. ADR-0023 (`tally`) was listed here while Proposed and was
+accepted in #161; its latency budget was measured in #171. ADR-0022 (Kubernetes) was listed here while Proposed and
 was accepted in #151. The earlier entry this table held — whether
 `Clear-Site-Data: "cookies"` on logout may clear the whole registrable
 domain — was decided in [ADR-0021](0021-clear-site-data-omits-cookies-on-logout.md) (#48).

@@ -52,6 +52,16 @@ type routerDeps struct {
 	CSRFProtector *csrf.Protector
 	LoginLimiter  *ratelimit.Limiter // REQUIREMENTS §7.2's IP axis for /login
 	Emitter       audit.Emitter      // RF-09; nil emits nothing
+	// Recorder is ADR-0023's durable audit path. Never nil: every privilege
+	// grant is recorded before it takes effect and denied when it cannot
+	// be, so a nil Recorder would be a router that grants nothing --
+	// newRouter panics on it, the same "programming mistake, not runtime
+	// condition" reasoning as its template.Must calls.
+	Recorder audit.Recorder
+	// Reductions records what reduces privilege, and failed logins, without
+	// blocking them (ADR-0023). Never nil, for the same reason; main waits
+	// on it before closing the Recorder.
+	Reductions *audit.Reductions
 
 	ReadinessChecks []ReadinessCheck // RNF-10's /readyz dependencies
 
@@ -173,12 +183,18 @@ func newRouter(deps routerDeps) *chi.Mux {
 		logger:       deps.Logger,
 	}
 
+	if deps.Recorder == nil || deps.Reductions == nil {
+		panic("router: routerDeps.Recorder and Reductions are required; ADR-0023 records every grant and reduction")
+	}
+
 	login := &loginHandler{
 		auth:         deps.Authenticator,
 		sessions:     deps.Sessions,
 		challenges:   deps.Challenges,
 		protector:    deps.CSRFProtector,
 		emitter:      deps.Emitter,
+		recorder:     deps.Recorder,
+		reductions:   deps.Reductions,
 		issuer:       deps.Issuer,
 		idleTTL:      deps.SessionIdleTTL,
 		absoluteTTL:  deps.SessionAbsoluteTTL,
@@ -196,6 +212,7 @@ func newRouter(deps routerDeps) *chi.Mux {
 		challenges:  deps.Challenges,
 		consents:    deps.Consents,
 		codes:       deps.Codes,
+		recorder:    deps.Recorder,
 		protector:   deps.CSRFProtector,
 		issuer:      deps.Issuer,
 		codeTTL:     deps.AuthCodeTTL,
@@ -210,6 +227,8 @@ func newRouter(deps routerDeps) *chi.Mux {
 		codes:              deps.Codes,
 		families:           deps.Families,
 		emitter:            deps.Emitter,
+		recorder:           deps.Recorder,
+		reductions:         deps.Reductions,
 		keyset:             deps.Keyset,
 		issuer:             deps.Issuer,
 		accessTokenTTL:     deps.AccessTokenTTL,
@@ -233,6 +252,8 @@ func newRouter(deps routerDeps) *chi.Mux {
 
 	logout := &logoutHandler{
 		sessions:      deps.Sessions,
+		reductions:    deps.Reductions,
+		now:           deps.Now,
 		logoutTmpl:    logoutTmpl,
 		loggedOutTmpl: loggedOutTmpl,
 		logger:        deps.Logger,
@@ -263,13 +284,14 @@ func newRouter(deps routerDeps) *chi.Mux {
 	}
 
 	revoke := &revokeHandler{
-		clients:   deps.Clients,
-		families:  deps.Families,
-		validator: bearerValidator,
-		denylist:  deps.Denylist,
-		emitter:   deps.Emitter,
-		now:       deps.Now,
-		logger:    deps.Logger,
+		clients:    deps.Clients,
+		families:   deps.Families,
+		validator:  bearerValidator,
+		denylist:   deps.Denylist,
+		emitter:    deps.Emitter,
+		reductions: deps.Reductions,
+		now:        deps.Now,
+		logger:     deps.Logger,
 	}
 
 	introspect := &introspectHandler{

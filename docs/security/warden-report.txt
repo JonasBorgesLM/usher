@@ -1,5 +1,9 @@
 warden run — 2026-10-06, local development machine (RI-06, issue #53)
 
+Re-run 2026-11-19, on develop at ed2bce5, for the v0.2.0 release (RELEASING), same commands, same
+configuration, warden at b071131: identical result, 0 findings, 20 examined, the same 2 skipped for the
+same reasons. The account below is unchanged.
+
 $ docker compose up -d
 $ go run ./cmd/seed
 $ cd ../warden && go build -o warden ./cmd/warden

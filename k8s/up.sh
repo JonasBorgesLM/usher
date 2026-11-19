@@ -66,9 +66,28 @@ if ! k -n "$NS" get secret usher-keys >/dev/null 2>&1; then
   USHER_DATABASE_URL=postgres://unused@localhost/unused USHER_REDIS_ADDR=localhost:6379 \
     USHER_ISSUER="http://localhost:${HOST_PORT}" USHER_DIRECTLY_EXPOSED=true \
     USHER_CSRF_SECRET="$(openssl rand -hex 32)" USHER_CLIENTS_PATH=clients.dev.json \
+    USHER_TALLY_LOG_DIR=/nonexistent USHER_TALLY_SIGNER_KEY_FILE=/nonexistent \
+    USHER_TALLY_VAULT_DIR=/nonexistent USHER_TALLY_KEK_FILE=/nonexistent USHER_TALLY_ANCHOR_DIR=/nonexistent \
     USHER_KEYS_DIR="$keydir" go run ./cmd/genkeys
   k -n "$NS" create secret generic usher-keys --from-file="$keydir" >/dev/null
   echo "up: generated the signing keyset into usher-keys"
+fi
+
+# ADR-0023: one audit signing key per StatefulSet ordinal, named by the pod,
+# whose name is that replica's origin; and the KEK that wraps each
+# replica's vault. Never the token keyset above (ADR-0015). tally keygen
+# comes from the tally module usher already requires.
+if ! k -n "$NS" get secret usher-audit-keys >/dev/null 2>&1; then
+  auditdir=$(mktemp -d)
+  replicas=$(awk '/^kind: StatefulSet/ { s = 1 } s && /^  replicas:/ { print $2; exit }' k8s/30-usher.yaml)
+  for i in $(seq 0 $((replicas - 1))); do
+    go run github.com/JonasBorgesLM/tally/cmd/tally keygen \
+      --name "usher.local/usher-${i}" --out "${auditdir}/usher-${i}" >/dev/null
+  done
+  head -c 32 /dev/urandom >"${auditdir}/kek"
+  k -n "$NS" create secret generic usher-audit-keys --from-file="$auditdir" >/dev/null
+  rm -rf "$auditdir"
+  echo "up: generated ${replicas} audit signing keys and the KEK into usher-audit-keys"
 fi
 
 k -n "$NS" create configmap usher-clients --from-file=clients.json=clients.dev.json \
@@ -77,9 +96,9 @@ k -n "$NS" create configmap usher-clients --from-file=clients.json=clients.dev.j
 k apply -f k8s/ >/dev/null
 # imagePullPolicy Never with a fixed tag: a rebuilt image is only picked up
 # by new pods.
-k -n "$NS" rollout restart deployment/usher deployment/resource-server >/dev/null
-for d in postgres redis usher resource-server; do
-  k -n "$NS" rollout status "deployment/$d" --timeout=180s
+k -n "$NS" rollout restart statefulset/usher deployment/resource-server >/dev/null
+for d in deployment/postgres deployment/redis statefulset/usher deployment/resource-server; do
+  k -n "$NS" rollout status "$d" --timeout=180s
 done
 
 # cmd/seed runs from the host against a temporary port-forward; it is
@@ -96,6 +115,8 @@ USHER_DATABASE_URL="postgres://usher:${pg_pass}@localhost:15432/usher?sslmode=di
   USHER_REDIS_ADDR=localhost:6379 USHER_ISSUER="http://localhost:${HOST_PORT}" \
   USHER_DIRECTLY_EXPOSED=true USHER_CSRF_SECRET="$(openssl rand -hex 32)" \
   USHER_CLIENTS_PATH=clients.dev.json USHER_KEYS_DIR=/nonexistent \
+  USHER_TALLY_LOG_DIR=/nonexistent USHER_TALLY_SIGNER_KEY_FILE=/nonexistent \
+  USHER_TALLY_VAULT_DIR=/nonexistent USHER_TALLY_KEK_FILE=/nonexistent USHER_TALLY_ANCHOR_DIR=/nonexistent \
   go run ./cmd/seed
 
 echo "up: usher is at http://localhost:${HOST_PORT} (through Traefik)"

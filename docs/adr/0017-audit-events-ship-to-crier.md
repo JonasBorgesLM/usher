@@ -61,3 +61,13 @@ The two open questions, answered.
 
 T-19's residual changes accordingly: losing `crier` loses events, but not the
 record that a refresh family was revoked for reuse.
+
+## Amendment — failing closed, for privilege grants, superseded by ADR-0023 (#161)
+
+The rejection of failing closed above is superseded for the actions that grant
+privilege: token issuance, consent and login success are recorded in `tally`
+before they take effect, and denied when the record fails
+([ADR-0023](0023-privilege-granting-actions-audited-in-tally-fail-closed.md)).
+Everything else here stands: `crier` remains the best-effort path for
+dashboards and alerting, with the bounded buffer and drop counting of the
+amendment above, and `/readyz` still does not depend on it.

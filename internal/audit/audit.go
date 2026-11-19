@@ -19,6 +19,7 @@ const (
 	EventRefreshReuse    EventType = "refresh_reuse_detected"
 	EventCodeReplay      EventType = "code_replay_detected" // RS-04's sibling to EventRefreshReuse
 	EventRevocation      EventType = "revocation"
+	EventLogout          EventType = "logout"
 	EventRateLimited     EventType = "rate_limited"
 	EventGatewayRejected EventType = "gateway_rejected"
 )

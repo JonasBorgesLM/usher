@@ -20,6 +20,7 @@ updates:
       - dependency-name: github.com/JonasBorgesLM/moat
       - dependency-name: github.com/JonasBorgesLM/moat/redisstore
       - dependency-name: github.com/JonasBorgesLM/bastion
+      - dependency-name: github.com/JonasBorgesLM/tally # ADR-0023, the same reasons
     groups:
       test-tooling:
         patterns:

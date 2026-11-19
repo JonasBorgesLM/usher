@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/JonasBorgesLM/moat/csrf"
 	"github.com/JonasBorgesLM/moat/ratelimit"
 	"github.com/JonasBorgesLM/usher/internal/audit"
+	"github.com/JonasBorgesLM/usher/internal/audit/tallyaudit"
 	"github.com/JonasBorgesLM/usher/internal/config"
 	"github.com/JonasBorgesLM/usher/internal/identity"
 	"github.com/JonasBorgesLM/usher/internal/keys"
@@ -182,6 +184,34 @@ func run() error {
 		return fmt.Errorf("load signing keyset: %w", err)
 	}
 
+	// ADR-0023: this replica's tamper-evident audit log. Opened before the
+	// listener, so a replica that cannot record never serves a grant, and
+	// closed after the server has drained, so its closing checkpoint covers
+	// every request it answered. sync.OnceValue lets the same close run as
+	// serve's closer and as the deferred close of an early return.
+	recorder, err := tallyaudit.Open(ctx, tallyaudit.Config{
+		LogDir:             cfg.TallyLogDir,
+		SignerKeyFile:      cfg.TallySignerKeyFile,
+		VaultDir:           cfg.TallyVaultDir,
+		KEKFile:            cfg.TallyKEKFile,
+		AnchorDir:          cfg.TallyAnchorDir,
+		FreeSpaceThreshold: cfg.TallyFreeSpaceThreshold,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("open the audit log: %w", err)
+	}
+	// Reductions retries in the background; the log closes after them.
+	reductions := audit.NewReductions(recorder, logger)
+	closeRecorder := sync.OnceValue(func() error {
+		reductions.Wait()
+		return recorder.Close()
+	})
+	defer func() {
+		if cerr := closeRecorder(); cerr != nil {
+			logger.Error("close the audit log", "error", cerr)
+		}
+	}()
+
 	var emitter audit.Emitter
 	if cfg.CrierURL != "" {
 		crierEmitter := audit.NewCrierEmitter(&http.Client{Timeout: crierRequestTimeout}, cfg.CrierURL, cfg.CrierServiceName, cfg.CrierToken, crierBufferSize, logger)
@@ -215,7 +245,9 @@ func run() error {
 		CSRFProtector:        csrfProtector,
 		LoginLimiter:         loginLimiter,
 		Emitter:              emitter,
-		ReadinessChecks:      readinessChecks(pool, redisClient, keyset),
+		Recorder:             recorder,
+		Reductions:           reductions,
+		ReadinessChecks:      readinessChecks(pool, redisClient, keyset, recorder),
 		Clients:              clients,
 		AuthorizeLimiter:     authorizeLimiter,
 		Issuer:               cfg.Issuer,
@@ -245,6 +277,7 @@ func run() error {
 	defer stop()
 
 	return serve(shutdownCtx, srv, ln, shutdownDrainDeadline, logger,
+		closeRecorder,
 		func() error { return rateLimitStore.Close() },
 		func() error { return redisClient.Close() },
 		func() error { pool.Close(); return nil }, // pgxpool.Pool.Close has no return value
@@ -280,13 +313,15 @@ func namespacedKeyFunc(prefix string, fn ratelimit.KeyFunc) ratelimit.KeyFunc {
 	}
 }
 
-// readinessChecks is RNF-10's own dependency list: Postgres, Redis and
-// the signing keyset currently having an active key to sign with. The
+// readinessChecks is RNF-10's own dependency list: Postgres, Redis, the
+// signing keyset currently having an active key to sign with, and the audit
+// log not being poisoned (ADR-0023, Decision 4): every grant fails closed on
+// a poisoned log, so the replica is taken out rather than left to refuse. The
 // rate-limit store's own eviction policy (RNF-07) is checked once, at
 // construction above — if it were unsafe, run would already have
 // returned before reaching this point, so there is nothing left for
 // /readyz to poll about it.
-func readinessChecks(pool *pgxpool.Pool, redisClient *goredis.Client, keyset *keys.Keyset) []ReadinessCheck {
+func readinessChecks(pool *pgxpool.Pool, redisClient *goredis.Client, keyset *keys.Keyset, recorder *tallyaudit.Recorder) []ReadinessCheck {
 	return []ReadinessCheck{
 		{Name: "postgres", Check: func(ctx context.Context) error { return pool.Ping(ctx) }},
 		{Name: "redis", Check: func(ctx context.Context) error { return redisClient.Ping(ctx).Err() }},
@@ -294,5 +329,6 @@ func readinessChecks(pool *pgxpool.Pool, redisClient *goredis.Client, keyset *ke
 			_, err := keyset.Signing(time.Now())
 			return err
 		}},
+		{Name: "audit_log", Check: recorder.Ready},
 	}
 }

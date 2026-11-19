@@ -118,6 +118,20 @@ type Config struct {
 	// subsystem, absent by default" shape CrierURL already has.
 	GatewayAPIUpstream string
 	GatewayAPIAudience string
+
+	// Tally* is this replica's tamper-evident audit log (ADR-0023, RI-03):
+	// the log's directory, the signer key file whose name is this replica's
+	// origin, the vault and the KEK that wraps it, and the spool checkpoints
+	// are published to for something off the host to pull. All required:
+	// privilege grants fail closed without a log to record them in, so
+	// starting without one would start a replica that denies every login.
+	// TallyFreeSpaceThreshold is optional; zero disables the warning.
+	TallyLogDir             string
+	TallySignerKeyFile      string
+	TallyVaultDir           string
+	TallyKEKFile            string
+	TallyAnchorDir          string
+	TallyFreeSpaceThreshold uint64
 }
 
 // lifetimeBound names one RF-12 lifetime: the environment variable that
@@ -185,6 +199,12 @@ type Getenv func(key string) (value string, ok bool)
 // FromOSEnv is the Getenv Load runs under in production — the one call site
 // in this repository allowed to read the process environment directly.
 func FromOSEnv(key string) (string, bool) { return os.LookupEnv(key) }
+
+// defaultTallyFreeSpaceThreshold is when the audit log starts warning that
+// its volume is filling: 64 MiB, a few hundred thousand records and a
+// segment. A deployment's own choice, not a requirement restated; tally's
+// RUNBOOK says how to size it.
+const defaultTallyFreeSpaceThreshold = 64 << 20
 
 // Load reads every required and optional setting through getenv and returns
 // the first violation it finds, rather than collecting all of them: RNF-05
@@ -308,6 +328,31 @@ func Load(getenv Getenv) (Config, error) {
 			return Config{}, fmt.Errorf("config: USHER_HASH_MEMORY_CEILING_KIB=%q must be a positive integer", rawCeiling)
 		}
 		cfg.HashMemoryCeilingKiB = n
+	}
+
+	for _, f := range []struct {
+		env string
+		dst *string
+	}{
+		{"USHER_TALLY_LOG_DIR", &cfg.TallyLogDir},
+		{"USHER_TALLY_SIGNER_KEY_FILE", &cfg.TallySignerKeyFile},
+		{"USHER_TALLY_VAULT_DIR", &cfg.TallyVaultDir},
+		{"USHER_TALLY_KEK_FILE", &cfg.TallyKEKFile},
+		{"USHER_TALLY_ANCHOR_DIR", &cfg.TallyAnchorDir},
+	} {
+		v, set := getenv(f.env)
+		if !set || v == "" {
+			return Config{}, fmt.Errorf("config: %s is required and was not set (ADR-0023)", f.env)
+		}
+		*f.dst = v
+	}
+	cfg.TallyFreeSpaceThreshold = defaultTallyFreeSpaceThreshold
+	if raw, set := getenv("USHER_TALLY_FREE_SPACE_THRESHOLD"); set && raw != "" {
+		n, convErr := strconv.ParseUint(raw, 10, 64)
+		if convErr != nil {
+			return Config{}, fmt.Errorf("config: USHER_TALLY_FREE_SPACE_THRESHOLD=%q must be a number of bytes", raw)
+		}
+		cfg.TallyFreeSpaceThreshold = n
 	}
 
 	// Crier is entirely optional (RI-03): this deployment's own

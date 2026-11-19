@@ -202,3 +202,22 @@ so the probes needed no extra rule.
 The rollout test does not run in CI, because the pipeline has no cluster.
 It is a manual check, run when the shutdown path, the probes, the rollout
 strategy or a NetworkPolicy changes (`.claude/rules/k8s-deploy.md`).
+
+## Amendment — usher is a StatefulSet, for its audit log (#165)
+
+Decision 2's "one `usher` Deployment" is narrowed. ADR-0023 gives each replica
+its own `tally` audit log, vault and signing key, whose name is that replica's
+origin, so a pod needs a stable name and a volume that outlives it: usher is a
+StatefulSet of 2 replicas, with a `volumeClaimTemplates` volume for the audit
+data and a key per ordinal. Still one binary; ADR-0001 stands.
+
+What it changed, measured on k3d with `k8s/rollout-test.sh`:
+
+- **Rollout:** a StatefulSet has no `maxSurge` (a pod's name and volume cannot
+  exist twice), so its rolling update replaces one pod at a time while the
+  other carries the traffic. 12881 of 12881 requests answered 200 during the
+  restart of both workloads.
+- **`fsGroupChangePolicy: OnRootMismatch` is required.** With the default, the
+  kubelet re-applied group `rwx` to the audit directory on the pod's second
+  start, and `tally`'s file store refused a log directory looser than `0700`:
+  `usher-0` crash-looped. The rule is in `.claude/rules/k8s-deploy.md`.

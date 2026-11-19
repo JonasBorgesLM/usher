@@ -1,16 +1,18 @@
 module github.com/JonasBorgesLM/usher
 
-// 1.27.2 is a security floor, not a language feature choice (ADR-0008 and its
-// amendment). It was 1.26.6 for GO-2026-6090/GO-2026-5972 (inherited from
+// 1.27.4 is a security floor, not a language feature choice (ADR-0008 and its
+// amendments). It was 1.26.6 for GO-2026-6090/GO-2026-5972 (inherited from
 // moat/redisstore); GO-2026-6617 (net/http HTTP/2) is fixed in 1.26.9 and
 // 1.27.2, and Go orders versions across lines, so a 1.26.9 floor would be
-// satisfied by 1.27.0 and 1.27.1, which have no fix. Only 1.27.2 covers both.
-go 1.27.2
+// satisfied by 1.27.0 and 1.27.1, which have no fix. GO-2026-6859 (net/http
+// HTTP/1) is fixed in 1.27.4 and GO-2026-6809 (crypto/x509) in 1.27.3.
+go 1.27.4
 
 require (
 	github.com/JonasBorgesLM/bastion v0.3.0
 	github.com/JonasBorgesLM/moat v0.2.0
 	github.com/JonasBorgesLM/moat/redisstore v0.2.2
+	github.com/JonasBorgesLM/tally v0.2.1
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0

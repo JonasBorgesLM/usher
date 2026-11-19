@@ -35,8 +35,10 @@ type loginHandler struct {
 	sessions   session.SessionStore
 	challenges session.ChallengeStore
 	protector  *csrf.Protector
-	emitter    audit.Emitter // RF-09; nil is valid and simply emits nothing
-	issuer     string        // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
+	emitter    audit.Emitter     // RF-09; nil is valid and simply emits nothing
+	recorder   audit.Recorder    // ADR-0023; a login is recorded before its session exists
+	reductions *audit.Reductions // ADR-0023; a failed login is recorded without blocking
+	issuer     string            // RS-29, carried on a prompt=none login_required redirect (ADR-0020)
 
 	idleTTL, absoluteTTL time.Duration
 	now                  func() time.Time
@@ -174,7 +176,7 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 	result, err := h.auth.Attempt(r.Context(), identifier, password)
 	switch {
 	case err == nil:
-		h.emit(r, audit.EventLoginAttempt, audit.OutcomeSuccess, canonical)
+		// Mirrored to crier below, once tally holds it (#177).
 	case errors.Is(err, identity.ErrRateLimited):
 		h.emit(r, audit.EventRateLimited, audit.OutcomeFailure, canonical)
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -182,6 +184,15 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, identity.ErrLoginFailed):
 		h.emit(r, audit.EventLoginAttempt, audit.OutcomeFailure, canonical)
+		// ADR-0023's amendment (#167): recorded in tally, since login's
+		// rate limits bound how many an attacker can cause. The subject is
+		// the user the password was checked against, or none: the typed
+		// identifier never enters the log or the vault, where an attacker
+		// could make it grow at will.
+		h.reductions.Record(r.Context(), audit.Record{
+			ID: audit.NewRecordID(), Type: audit.EventLoginAttempt, Outcome: audit.OutcomeFailure,
+			Subject: result.User.ID, SourceAddr: r.RemoteAddr, At: h.now(),
+		})
 		h.render(w, r, loginPageData{Challenge: challenge, Error: genericLoginError})
 		return
 	default:
@@ -190,6 +201,26 @@ func (h *loginHandler) post(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ADR-0023: login success is a grant (its amendment, #161): the session
+	// it creates later grants tokens without a password. Recorded before
+	// the session exists, and denied when it cannot be.
+	if err := h.recorder.Record(r.Context(), audit.Record{
+		ID:         audit.NewRecordID(),
+		Type:       audit.EventLoginAttempt,
+		Outcome:    audit.OutcomeSuccess,
+		Subject:    result.User.ID,
+		SourceAddr: r.RemoteAddr,
+		At:         h.now(),
+	}); err != nil {
+		h.logger.ErrorContext(r.Context(), "login: audit record failed; login denied", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// Only now, mirrored to crier (#177): emitted before the record, a
+	// denied login would show on a dashboard as a success (RI-03). The
+	// failures above are emitted at once instead, since each describes
+	// something that has already happened (ADR-0023's amendment).
+	h.emit(r, audit.EventLoginAttempt, audit.OutcomeSuccess, canonical)
 	h.completeLogin(w, r, challenge, result.User.ID)
 }
 

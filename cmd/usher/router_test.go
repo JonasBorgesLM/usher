@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"html"
 	"net/http"
 	"net/http/httptest"
@@ -197,6 +198,7 @@ func testDeps(t testing.TB) routerDeps {
 	if err != nil {
 		t.Fatalf("csrf.New: %v", err)
 	}
+	recorder := audit.NewMemoryRecorder()
 	return routerDeps{
 		Authenticator:      auth,
 		Sessions:           newFakeSessionStore(),
@@ -212,6 +214,8 @@ func testDeps(t testing.TB) routerDeps {
 		AccessTokenTTL:     5 * time.Minute,
 		SessionIdleTTL:     time.Hour,
 		SessionAbsoluteTTL: 24 * time.Hour,
+		Recorder:           recorder,
+		Reductions:         audit.NewReductions(recorder, nil),
 		Now:                func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 }
@@ -512,6 +516,30 @@ func TestLoginRoute_WrongPasswordRendersGenericError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), genericLoginError) {
 		t.Errorf("response does not contain the generic error message: %s", rec.Body.String())
+	}
+}
+
+// TestLoginRoute_DeniedLoginNeverReachesCrier is #177: a login whose tally
+// record fails is denied (ADR-0023), so crier must not show it as a
+// success. Mirrored only after the record (RI-03).
+//
+// Negative control: with the success emit moved back before the record,
+// this test failed -- the sink held one EventLoginAttempt/success for a
+// login answered 500. Verified by hand, restored before committing.
+func TestLoginRoute_DeniedLoginNeverReachesCrier(t *testing.T) {
+	deps, sink := testDepsWithSink(t)
+	recorderOf(t, deps).Fail(errors.New("the log is poisoned"))
+	mux := newRouter(deps)
+	token, cookie, _ := getLogin(t, mux)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, postLogin(token, cookie, testIdentifier, testPassword))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: a login whose record fails is denied", rec.Code)
+	}
+	if events := sink.Events(); len(events) != 0 {
+		t.Errorf("sink recorded %d events for a denied login, want 0: %+v", len(events), events)
 	}
 }
 

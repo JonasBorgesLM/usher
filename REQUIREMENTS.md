@@ -157,7 +157,9 @@ adding gateway-controlled identity headers (RI-04).
 **RF-09 — Audit.** Authentication events — login success and failure, consent,
 token issuance, refresh reuse detected, revocation, rate-limit rejection, token
 rejected at the gateway — are recorded as structured events with a versioned
-schema. Where they go is RI-03.
+schema. Actions that grant privilege are recorded durably before they take
+effect and are denied when the record fails; actions that reduce privilege
+execute and their record is retried (ADR-0023). Where events go is RI-03.
 
 **RF-10 — Browser session at the AS.** A successful login establishes a
 server-side session, so a second `/authorize` from the same browser does not
@@ -462,7 +464,7 @@ intended.
 
 ## 6. Non-functional requirements
 
-**RNF-01 — Go 1.27.2 floor** (1.26.6 as first written; raised by ADR-0008's amendment for GO-2026-6617 — same reasoning, one release later). This is the `redisstore` satellite's floor, and it
+**RNF-01 — Go 1.27.4 floor** (1.26.6 as first written; raised by ADR-0008's amendments to 1.27.2 for GO-2026-6617 — same reasoning, one release later — and to 1.27.4 for GO-2026-6859 and GO-2026-6809). This is the `redisstore` satellite's floor, and it
 is a *security* floor rather than a language-feature one: that module reaches
 `crypto/tls` and `encoding/asn1`, which carry GO-2026-6090 and GO-2026-5972,
 fixed in 1.26.6. It is 1.26.6 rather than 1.25.13 because Go orders versions
@@ -583,7 +585,7 @@ implementation.
 | Rate limit buckets | Redis | Shared across instances (see RNF-07) |
 | Access token denylist | Redis | TTL equals token TTL; gateway-only (RF-06) |
 | Private keys | Mounted keyset, never the database or the repository | [ADR-0015](docs/adr/0015-signing-keyset-custody-and-rotation.md) |
-| Audit events | Structured log stream, shipped to `crier` | RI-03, [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md); the reuse-detected fact is also on the family row |
+| Audit events | A local `tally` log per replica, mirrored to `crier` | RI-03, [ADR-0023](docs/adr/0023-privilege-granting-actions-audited-in-tally-fail-closed.md), [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md); the reuse-detected fact is also on the family row |
 
 What Redis loses is, row by row, either safe to lose or a stated residual: a lost
 code or challenge fails the flow; a lost session forces a login; a lost
@@ -801,13 +803,16 @@ code existed, and closes `bastion` issue #32:
 2. The rate limiter runs once, on the way in. A call `bastion` refuses never
    re-charges the client's budget.
 
-**RI-03 — Audit events are shipped to `crier`.** RF-09's events are emitted as
-structured records with a versioned schema and exported to `crier`'s ingestion
-endpoint, authenticated with the gateway's own credential (`crier/IR3`). They
-carry no secret (RS-23). Durability and queryability are `crier`'s backend's;
-what that costs is [ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md).
-When `crier` is unreachable, events queue in a bounded buffer and are then
-dropped and counted; `/readyz` does not depend on `crier`.
+**RI-03 — Audit events go to `tally`, and are mirrored to `crier`.** Every
+RF-09 event is recorded in `tally` through `audit.Recorder`
+([ADR-0023](docs/adr/0023-privilege-granting-actions-audited-in-tally-fail-closed.md)),
+with the subject as a `SubjectRef` and identifying details sealed. Events are
+also emitted to `crier`'s ingestion endpoint, authenticated with the gateway's
+own credential (`crier/IR3`), for dashboards and alerting, best-effort: when
+`crier` is unreachable they queue in a bounded buffer and are then dropped and
+counted, and `/readyz` does not depend on `crier`
+([ADR-0017](docs/adr/0017-audit-events-ship-to-crier.md)). They carry no
+secret (RS-23).
 
 **RI-04 — The identity header contract.** The gateway injects `X-Auth-Subject`,
 `X-Auth-Client` and `X-Auth-Scope`, after stripping the namespace (RS-17). A
@@ -884,3 +889,4 @@ The M0 decisions, taken before the code they govern.
 |---|---|
 | Added `internal/config` to §7's package tree | Writing `docs/ARCHITECTURE.md` (#5) found a package the commit scopes and issue #12 already assumed but the tree never listed |
 | §7 links `docs/ARCHITECTURE.md` | The signatures the foundation method's step 3 asks for now exist |
+| RF-09 fails privilege grants closed when their record fails; RI-03 records every event in `tally` and mirrors to `crier` | ADR-0023 accepted (#161): `crier` is best-effort and editable, so it cannot be the evidence of what was granted |
