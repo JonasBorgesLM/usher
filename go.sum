@@ -10,8 +10,8 @@ github.com/JonasBorgesLM/moat v0.2.0 h1:4GWDJInGeIgLmdeUxzK2ckUT1WBBhffWyoZP5hSW
 github.com/JonasBorgesLM/moat v0.2.0/go.mod h1:65xs3itYF+S7xsAZ32o0N7FvZj1564SDquOvmE2nD0o=
 github.com/JonasBorgesLM/moat/redisstore v0.2.2 h1:WzTF/vOMiGYXUm4ZzDJG0TymRdVoCKQonWWwjufOgHM=
 github.com/JonasBorgesLM/moat/redisstore v0.2.2/go.mod h1:PTP3/EgjvpGZNAvLxN16Cf9xtwi/W90dzF3KfylU6FQ=
-github.com/JonasBorgesLM/tally v0.2.0 h1:CRigzmSUe2BpdVG43CIO8KcORVDntYeNg5Rsw9OMesM=
-github.com/JonasBorgesLM/tally v0.2.0/go.mod h1:9wbQmWMjRVAfjY0V/Dr3jHJzcDPWfnMdkIcpAj0v+6k=
+github.com/JonasBorgesLM/tally v0.2.1 h1:abY5LCy8MC0Xc4aSljAle9/hl/x2/ZCtOXcY4eo9ZaU=
+github.com/JonasBorgesLM/tally v0.2.1/go.mod h1:9wbQmWMjRVAfjY0V/Dr3jHJzcDPWfnMdkIcpAj0v+6k=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
 github.com/bsm/ginkgo/v2 v2.12.0 h1:Ny8MWAHyOepLGlLKYmXG4IEkioBysk6GpaRTLC8zwWs=
