@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -1225,5 +1226,80 @@ func TestNewHandler_RetryAfterTracksTheBreakersOpenTimeout(t *testing.T) {
 	}
 	if got < 1 || got > 5 {
 		t.Errorf("Retry-After = %d, want within the breaker's 5 s open timeout", got)
+	}
+}
+
+// A 401 the gateway returns because its own infrastructure failed is
+// logged with its category and the infrastructure's error, and never the
+// token, its jti or its subject (#148, RS-23, RS-25); a 401 the client
+// caused, here a revoked token, is not logged at all. The response is the
+// same bare 401 in every case.
+//
+// Negative control: with infraDenied's calls removed from NewHandler, the
+// denylist and role-lookup cases logged nothing. Verified by hand, restored
+// before committing.
+func TestNewHandler_InfraFailuresAreLoggedByCategory(t *testing.T) {
+	priv := testRSAKeyPair(t)
+	cases := []struct {
+		name, reason, infraErr string
+		build                  func(upstream *httptest.Server, logger *slog.Logger) http.Handler
+	}{
+		{
+			name: "denylist", reason: "denylist_error", infraErr: "redis unavailable",
+			build: func(u *httptest.Server, logger *slog.Logger) http.Handler {
+				d := newFakeDenylist()
+				d.containsErr = errors.New("redis unavailable")
+				return NewHandler(testRoute(t, u), testValidator(t, priv), d, nil, nil, logger)
+			},
+		},
+		{
+			name: "role lookup", reason: "role_lookup_error", infraErr: "role store unavailable",
+			build: func(u *httptest.Server, logger *slog.Logger) http.Handler {
+				route := testRoute(t, u)
+				route.Permission = "widgets:read"
+				roles := fakeRoleLookup{err: errors.New("role store unavailable")}
+				return NewHandler(route, testValidator(t, priv), newFakeDenylist(), roles,
+					rbac.New(rbac.Permissions{"admin": {"widgets:read"}}), logger)
+			},
+		},
+	}
+	ran := 0
+	for _, c := range cases {
+		upstream, _ := capturingUpstream(t, http.StatusOK)
+		var logs bytes.Buffer
+		handler := c.build(upstream, slog.New(slog.NewTextHandler(&logs, nil)))
+		jti := "jti-infra-" + c.reason
+		token := testAccessToken(t, priv, jti, []string{"widgets:read"})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, proxyRequest("Bearer "+token, nil))
+
+		out := logs.String()
+		if rec.Code != http.StatusUnauthorized || rec.Body.Len() != 0 {
+			t.Errorf("%s: response %d %q, want a bare 401", c.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(out, "reason="+c.reason) || !strings.Contains(out, c.infraErr) {
+			t.Errorf("%s: log %q, want reason=%s and the infrastructure's error", c.name, out, c.reason)
+		}
+		for _, secret := range []string{token, jti, testSubject} {
+			if strings.Contains(out, secret) {
+				t.Errorf("%s: the log carries %q", c.name, secret)
+			}
+		}
+		ran++
+	}
+	if ran != 2 {
+		t.Fatalf("ran %d cases, want 2", ran)
+	}
+
+	// A revoked token: the client's doing, not logged.
+	upstream, _ := capturingUpstream(t, http.StatusOK)
+	var logs bytes.Buffer
+	d := newFakeDenylist()
+	d.revoked["jti-revoked"] = true
+	handler := NewHandler(testRoute(t, upstream), testValidator(t, priv), d, nil, nil, slog.New(slog.NewTextHandler(&logs, nil)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, proxyRequest("Bearer "+testAccessToken(t, priv, "jti-revoked", []string{"openid"}), nil))
+	if rec.Code != http.StatusUnauthorized || logs.Len() != 0 {
+		t.Errorf("a revoked token: %d, logged %q; want 401 and no log line", rec.Code, logs.String())
 	}
 }
