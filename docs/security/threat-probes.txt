@@ -1,10 +1,10 @@
-threat probes — 2026-11-19, local development machine, on develop at ed2bce5 (the v0.2.0 release's re-verification, RELEASING; tally v0.2.1 in place)
+threat probes — 2026-11-19, local development machine, on develop at 92ec485 (the v0.2.1 release's re-verification, RELEASING; tally v0.2.1, jwx 4.6.0)
 
 $ docker compose up -d --build --wait
 $ go run ./cmd/seed
 $ ./scripts/probe-threats.sh | tee docs/security/threat-probes.txt
 
-usher threat probes -- 2026-11-19T12:55:56Z
+usher threat probes -- 2026-11-19T16:35:42Z
 against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resource server)
 
 === shared setup: one real authorization_code exchange ===
@@ -103,11 +103,14 @@ against http://localhost:8080 (AS/gateway) and http://localhost:8081 (demo resou
 
 ---
 
-Re-run for v0.2.0 (2026-11-19): every probe's outcome is the 2026-10-08 run's,
-31 PASS, 0 FAIL, 3 GAP. The only change in the output is T-19's GAP line,
-which the script now words for ADR-0023: the record is each replica's tally
-log, checked offline against its anchor, and tampering with it is detected
-on the running stack by .github/scripts/check-audit-tamper.sh.
+Re-run for v0.2.1 (2026-11-19, develop at 92ec485, after the bumps of
+x/crypto, x/text, chi, go-redis and jwx): every probe's outcome is the
+v0.2.0 run's and the 2026-10-08 run's, 30 PASS, 0 FAIL, 3 GAP.
+
+A correction: the v0.2.0 note here, and the descriptions of usher#184 and
+usher#185, said 31 PASS. That count took in a prose line further down this
+file that begins with "PASS"; counted over the probe output alone, every run
+since 2026-10-08 has 30.
 
 ---
 

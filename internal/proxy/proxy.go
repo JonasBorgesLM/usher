@@ -268,6 +268,22 @@ func unauthorized(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusUnauthorized)
 }
 
+// infraDenied logs a 401 the gateway returned because its own
+// infrastructure failed (RNF-04: a failure denies), not because of the
+// credential: the denylist or the role store could not answer. Without it
+// such a 401 is indistinguishable, in the logs as on the wire, from an
+// invalid token (#148). The response is unchanged.
+//
+// It logs the category and the infrastructure's error only: never the
+// token, its jti or its subject (RS-23, RS-25). The client-caused 401s
+// (no bearer, a token that fails validation, a revoked one) are not
+// logged, as before: a client can produce those at will, and a log line
+// per request would let it flood the log.
+func infraDenied(r *http.Request, logger *slog.Logger, reason string, err error) {
+	logger.ErrorContext(r.Context(), "proxy: request denied because a check could not run",
+		"reason", reason, "error", err)
+}
+
 // NewHandler builds the reverse proxy for one Route. It reaches tokens
 // only through validator (pkg/tokenvalidator, constructed over
 // keys.Keyset.AsKeySource — internal/keys, not internal/oauth) and
@@ -395,7 +411,12 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 		// error collapses to the same outcome as "revoked" (RNF-04:
 		// infrastructure failure denies), never to "allowed."
 		revoked, err := denylist.Contains(r.Context(), claims.JTI)
-		if err != nil || revoked {
+		if err != nil {
+			infraDenied(r, logger, "denylist_error", err)
+			unauthorized(w)
+			return
+		}
+		if revoked {
 			unauthorized(w)
 			return
 		}
@@ -429,6 +450,7 @@ func NewHandler(route Route, validator *tokenvalidator.Validator, denylist Denyl
 		// RequirePermission's own 403 is reserved for that second case.
 		role, err := roles.RoleOf(r.Context(), claims.Subject)
 		if err != nil {
+			infraDenied(r, logger, "role_lookup_error", err)
 			unauthorized(w)
 			return
 		}
